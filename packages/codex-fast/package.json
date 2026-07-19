@@ -1,0 +1,37 @@
+{
+  "name": "@async23/pi-codex-fast",
+  "version": "0.1.0",
+  "description": "Toggle OpenAI Codex Fast mode in Pi with /fast",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "openai-codex",
+    "fast-mode"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/codex-fast"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/codex-fast#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/fast.ts"
+    ]
+  }
+}

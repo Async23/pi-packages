@@ -1,0 +1,13 @@
+{
+  "name": "async23-pi-packages",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for Pi coding agent packages maintained by Async23",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "pack:check": "npm pack --workspaces --dry-run"
+  }
+}
