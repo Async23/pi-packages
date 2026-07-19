@@ -29,9 +29,10 @@ export default function fastModeExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		const label = isCodexActive(ctx) ? "fast" : "fast:inactive";
-		const color = isCodexActive(ctx) ? "accent" : "warning";
-		ctx.ui.setStatus(STATUS_ID, ctx.ui.theme.fg(color, label));
+		const text = isCodexActive(ctx)
+			? ctx.ui.theme.fg("accent", "fast")
+			: ctx.ui.theme.fg("dim", ctx.ui.theme.strikethrough("fast"));
+		ctx.ui.setStatus(STATUS_ID, text);
 	}
 
 	function statusMessage(ctx: ExtensionContext): string {

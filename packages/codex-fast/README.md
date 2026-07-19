@@ -28,7 +28,7 @@ When enabled with an `openai-codex` model, the extension adds:
 
 Fast mode remains enabled for the current Pi session and survives session reload or resume. A new session starts with Fast mode disabled.
 
-If another provider is selected, the footer shows `fast:inactive`; Fast mode takes effect again after selecting an `openai-codex` model.
+If another provider is selected, the footer shows a dim, struck-through `fast`; Fast mode takes effect again after selecting an `openai-codex` model.
 
 ## Usage warning
 
