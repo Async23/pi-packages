@@ -13,11 +13,10 @@ Restart Pi after installation, or run `/reload` in an existing session.
 ## Usage
 
 ```text
-/fast          Toggle Fast mode
-/fast on       Enable Fast mode
-/fast off      Disable Fast mode
-/fast status   Show the current state
+/fast    Toggle Fast mode on or off
 ```
+
+The command does not accept arguments.
 
 When enabled with an `openai-codex` model, the extension adds:
 

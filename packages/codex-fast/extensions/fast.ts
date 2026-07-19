@@ -4,8 +4,6 @@ const STATE_ENTRY_TYPE = "fast-mode-state";
 const STATUS_ID = "fast-mode";
 const CODEX_PROVIDER = "openai-codex";
 
-type FastCommand = "on" | "off" | "status";
-
 interface FastModeState {
 	enabled: boolean;
 }
@@ -51,24 +49,12 @@ export default function fastModeExtension(pi: ExtensionAPI) {
 
 	pi.registerCommand("fast", {
 		description: "Toggle OpenAI Codex Fast mode (priority service tier)",
-		getArgumentCompletions: (prefix) => {
-			const commands: FastCommand[] = ["on", "off", "status"];
-			const matches = commands.filter((command) => command.startsWith(prefix.trim().toLowerCase()));
-			return matches.length > 0 ? matches.map((command) => ({ value: command, label: command })) : null;
-		},
 		handler: async (args, ctx) => {
-			const command = args.trim().toLowerCase();
-			if (command !== "" && command !== "on" && command !== "off" && command !== "status") {
-				ctx.ui.notify("Usage: /fast [on|off|status]", "error");
+			if (args.trim() !== "") {
+				ctx.ui.notify("Usage: /fast", "error");
 				return;
 			}
-
-			if (command === "status") {
-				ctx.ui.notify(statusMessage(ctx), "info");
-				return;
-			}
-
-			setEnabled(command === "on" || (command === "" && !enabled), ctx);
+			setEnabled(!enabled, ctx);
 		},
 	});
 
