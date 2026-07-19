@@ -1,0 +1,39 @@
+{
+  "name": "@async23/pi-context-control",
+  "version": "0.1.0",
+  "description": "Interactively enable or disable Pi Context instruction files",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "context",
+    "agents-md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/context-control"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/context-control#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/context-control.ts"
+    ]
+  }
+}
