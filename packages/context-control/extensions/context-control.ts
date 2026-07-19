@@ -299,9 +299,7 @@ class ContextControlPanel implements Component {
 		const item = this.#currentItem();
 		if (!item) return;
 		const error = this.#onToggle(item.path);
-		this.#flash = error
-			? { kind: "error", text: error }
-			: { kind: "success", text: "Saved · Applies to the next request" };
+		this.#flash = error ? { kind: "error", text: error } : { kind: "success", text: "Saved" };
 	}
 
 	#handleListInput(data: string, wide: boolean): void {
@@ -405,8 +403,8 @@ class ContextControlPanel implements Component {
 		}
 		const fill = Math.max(0, innerWidth - visibleWidth(title) - 1);
 		return [
-			`${this.#theme.fg("borderAccent", "╭─")}${this.#theme.fg("accent", this.#theme.bold(title))}${this.#theme.fg(
-				"borderAccent",
+			`${this.#theme.fg("borderMuted", "╭─")}${this.#theme.fg("accent", this.#theme.bold(title))}${this.#theme.fg(
+				"borderMuted",
 				`${"─".repeat(fill)}╮`,
 			)}`,
 		];
@@ -423,14 +421,21 @@ class ContextControlPanel implements Component {
 		return selected ? this.#theme.bg("selectedBg", padded) : padded;
 	}
 
-	#summary(width: number): string {
+	#maximumOverlayHeight(): number {
+		return Math.max(1, Math.floor(this.#tui.terminal.rows * 0.9));
+	}
+
+	#preferredOverlayHeight(): number {
+		return Math.max(1, Math.min(this.#maximumOverlayHeight(), Math.floor(this.#tui.terminal.rows * 0.78)));
+	}
+
+	#summary(): string {
 		const activeCount = this.#items.filter((item) => !this.#disabledPaths.has(item.path)).length;
 		const disabledCount = this.#items.length - activeCount;
 		const parts = [
 			this.#theme.fg("text", `${activeCount} included`),
 			this.#theme.fg(disabledCount > 0 ? "warning" : "dim", `${disabledCount} excluded`),
 		];
-		if (width >= 50) parts.push(this.#theme.fg("muted", `${this.#items.length} discovered`));
 		return parts.join(this.#theme.fg("dim", "  ·  "));
 	}
 
@@ -444,12 +449,17 @@ class ContextControlPanel implements Component {
 
 	#sectionSegment(label: string, width: number, focused: boolean): string {
 		if (width <= 0) return "";
-		const title = `─ ${label} `;
-		const styledTitle = focused
-			? this.#theme.fg("accent", this.#theme.bold(title))
-			: this.#theme.fg("borderMuted", title);
-		const fill = Math.max(0, width - visibleWidth(title));
-		return `${styledTitle}${this.#theme.fg(focused ? "borderAccent" : "borderMuted", "─".repeat(fill))}`;
+		const prefix = "─ ";
+		const suffix = " ";
+		const titleWidth = visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix);
+		const styledLabel = focused
+			? this.#theme.fg("accent", this.#theme.bold(label))
+			: this.#theme.fg("muted", label);
+		const fill = Math.max(0, width - titleWidth);
+		return `${this.#theme.fg("borderMuted", prefix)}${styledLabel}${this.#theme.fg(
+			"borderMuted",
+			`${suffix}${"─".repeat(fill)}`,
+		)}`;
 	}
 
 	#buildListRows(items: ContextListItem[]): ListRow[] {
@@ -524,12 +534,10 @@ class ContextControlPanel implements Component {
 				: disabled
 					? this.#theme.fg("dim", row.item.label)
 					: this.#theme.fg("text", row.item.label);
-			const status = disabled ? this.#theme.fg("dim", "Excluded") : this.#theme.fg("muted", "Included");
-			return this.#paneContent(
-				this.#joined(`${icon}  ${label}`, status, Math.max(0, width - 2)),
-				width,
-				selected && focused,
-			);
+			const content = disabled
+				? this.#joined(`${icon}  ${label}`, this.#theme.fg("dim", "Excluded"), Math.max(0, width - 2))
+				: `${icon}  ${label}`;
+			return this.#paneContent(content, width, selected && focused);
 		});
 		while (rendered.length < height) rendered.push(" ".repeat(width));
 		return rendered.slice(0, height);
@@ -565,16 +573,12 @@ class ContextControlPanel implements Component {
 	}
 
 	#previewMetadata(item: ContextListItem, width: number): string[] {
-		const disabled = this.#disabledPaths.has(item.path);
-		const status = disabled
-			? this.#theme.fg("warning", "Excluded from the next request")
-			: this.#theme.fg("text", "Included in the next request");
 		const bytes = new TextEncoder().encode(item.content).length;
 		const metadata = `${lineCount(item.content)} lines · ${formatBytes(bytes)} · ~${formatCount(estimateTokens(item.content))} tokens`;
 		const label = truncateToWidth(item.label, Math.max(1, width - 2), "…");
 		return [
-			this.#paneContent(this.#theme.fg("text", this.#theme.bold(label)), width),
-			this.#paneContent(`${this.#theme.fg("muted", `${item.scope} · `)}${status}`, width),
+			this.#paneContent(this.#theme.fg("accent", this.#theme.bold(label)), width),
+			this.#paneContent(this.#theme.fg("muted", item.scope), width),
 			this.#paneContent(this.#theme.fg("dim", metadata), width),
 		];
 	}
@@ -592,7 +596,8 @@ class ContextControlPanel implements Component {
 		}
 
 		const metadata = this.#previewMetadata(item, width);
-		const previewHeight = Math.max(1, height - metadata.length - 1);
+		const spacerCount = height >= 9 ? 2 : height >= 7 ? 1 : 0;
+		const previewHeight = Math.max(1, height - metadata.length - 1 - spacerCount);
 		const contentWidth = Math.max(1, width - 2);
 		const previewLines = this.#previewLines(item, contentWidth);
 		this.#lastPreviewLineCount = previewLines.length;
@@ -603,10 +608,19 @@ class ContextControlPanel implements Component {
 		);
 
 		const position = previewLines.length === 0
-			? "Empty file · No instructions contributed"
-			: `View ${this.#previewOffset + 1}–${Math.min(this.#previewOffset + previewHeight, previewLines.length)} of ${previewLines.length} wrapped rows`;
+			? ""
+			: ` · View ${this.#previewOffset + 1}–${Math.min(this.#previewOffset + previewHeight, previewLines.length)} of ${previewLines.length} wrapped rows`;
+		const dividerWidth = Math.max(0, width - 2);
+		const dividerPrefix = this.#theme.fg("borderMuted", "─ ");
+		const dividerTitle = this.#theme.fg("accent", this.#theme.bold("Content"));
+		const dividerPosition = this.#theme.fg("dim", position);
+		const dividerLabel = truncateToWidth(
+			`${dividerPrefix}${dividerTitle}${dividerPosition}${this.#theme.fg("borderMuted", " ")}`,
+			dividerWidth,
+			"…",
+		);
 		const separator = this.#paneContent(
-			this.#theme.fg("dim", this.#pad(position, Math.max(0, width - 2))),
+			`${dividerLabel}${this.#theme.fg("borderMuted", "─".repeat(Math.max(0, dividerWidth - visibleWidth(dividerLabel))))}`,
 			width,
 		);
 		const content = previewLines.length === 0
@@ -615,23 +629,29 @@ class ContextControlPanel implements Component {
 					.slice(this.#previewOffset, this.#previewOffset + previewHeight)
 					.map((line) => this.#paneContent(line, width));
 
-		const rows = [...metadata, separator, ...content];
+		const spacer = this.#paneContent("", width);
+		const beforeDivider = spacerCount >= 1 ? [spacer] : [];
+		const afterDivider = spacerCount >= 2 ? [spacer] : [];
+		const rows = [...metadata, ...beforeDivider, separator, ...afterDivider, ...content];
 		while (rows.length < height) rows.push(" ".repeat(width));
 		return rows.slice(0, height);
 	}
 
-	#flashOrHelp(help: string): string {
-		if (!this.#flash) return this.#theme.fg("dim", help);
-		return this.#theme.fg(this.#flash.kind === "error" ? "error" : "success", this.#flash.text);
+	#helpWithFlash(help: string, width: number): string {
+		const styledHelp = this.#theme.fg("dim", help);
+		if (!this.#flash) return styledHelp;
+		const styledFlash = this.#theme.fg(this.#flash.kind === "error" ? "error" : "success", this.#flash.text);
+		if (this.#flash.kind === "error") return styledFlash;
+		return this.#joined(styledHelp, styledFlash, width);
 	}
 
 	#renderWide(width: number): string[] {
 		const innerWidth = width - 2;
 		const listWidth = Math.min(42, Math.max(32, Math.floor(innerWidth * 0.38)));
 		const previewWidth = innerWidth - listWidth - 1;
-		const contentHeight = 14;
 		const lines = this.#topBorder(width, "Context files");
-		lines.push(this.#fullLine(this.#summary(width), innerWidth));
+		const contentHeight = Math.max(4, Math.min(30, this.#preferredOverlayHeight() - lines.length - 6));
+		lines.push(this.#fullLine(this.#summary(), innerWidth));
 		lines.push(this.#fullLine(this.#search(width), innerWidth));
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Files", listWidth, this.#focus === "list")}${this.#theme.fg(
@@ -643,9 +663,8 @@ class ContextControlPanel implements Component {
 		const listRows = this.#renderListRows(listWidth, contentHeight, this.#focus === "list");
 		const previewRows = this.#renderPreviewRows(previewWidth, contentHeight);
 		for (let index = 0; index < contentHeight; index++) {
-			const dividerColor = this.#focus === "preview" ? "borderAccent" : "borderMuted";
 			lines.push(
-				`${this.#theme.fg("borderMuted", "│")}${listRows[index]}${this.#theme.fg(dividerColor, "│")}${previewRows[index]}${this.#theme.fg(
+				`${this.#theme.fg("borderMuted", "│")}${listRows[index]}${this.#theme.fg("borderMuted", "│")}${previewRows[index]}${this.#theme.fg(
 					"borderMuted",
 					"│",
 				)}`,
@@ -658,7 +677,7 @@ class ContextControlPanel implements Component {
 			)}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`,
 		);
 		const help = "↑↓ select/scroll   Tab switch pane   Space toggle   PgUp/PgDn scroll   Esc close";
-		lines.push(this.#fullLine(this.#flashOrHelp(help), innerWidth));
+		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
 	}
@@ -669,9 +688,9 @@ class ContextControlPanel implements Component {
 
 	#renderNarrowList(width: number): string[] {
 		const innerWidth = width - 2;
-		const contentHeight = 12;
 		const lines = this.#topBorder(width, "Context files");
-		lines.push(this.#fullLine(this.#summary(width), innerWidth));
+		const contentHeight = Math.max(3, Math.min(16, this.#preferredOverlayHeight() - lines.length - 9));
+		lines.push(this.#fullLine(this.#summary(), innerWidth));
 		lines.push(this.#fullLine(this.#search(width), innerWidth));
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Files", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
@@ -695,15 +714,15 @@ class ContextControlPanel implements Component {
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help = width >= 55 ? "↑↓ select   Enter preview   Space toggle   Esc close" : "↑↓ select   Enter preview   Space toggle";
-		lines.push(this.#fullLine(this.#flashOrHelp(help), innerWidth));
+		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
 	}
 
 	#renderNarrowPreview(width: number): string[] {
 		const innerWidth = width - 2;
-		const contentHeight = 15;
 		const lines = this.#topBorder(width, "Context preview");
+		const contentHeight = Math.max(5, Math.min(24, this.#preferredOverlayHeight() - lines.length - 4));
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Full file", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
 		);
@@ -711,7 +730,7 @@ class ContextControlPanel implements Component {
 		for (const row of previewRows) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help = width >= 55 ? "↑↓/PgUp/PgDn scroll   Space toggle   Enter/Esc back" : "↑↓ scroll   Space toggle   Esc back";
-		lines.push(this.#fullLine(this.#flashOrHelp(help), innerWidth));
+		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
 	}
@@ -754,31 +773,42 @@ export default function contextControlExtension(pi: ExtensionAPI) {
 				return { path, label: displayPath(path), scope, content: file.content };
 			});
 
-			await ctx.ui.custom((tui, theme, keybindings, done) =>
-				new ContextControlPanel({
-					tui,
-					theme,
-					keybindings,
-					items,
-					disabledPaths,
-					onToggle: (path) => {
-						const wasDisabled = disabledPaths.has(path);
-						if (wasDisabled) disabledPaths.delete(path);
-						else disabledPaths.add(path);
+			await ctx.ui.custom(
+				(tui, theme, keybindings, done) =>
+					new ContextControlPanel({
+						tui,
+						theme,
+						keybindings,
+						items,
+						disabledPaths,
+						onToggle: (path) => {
+							const wasDisabled = disabledPaths.has(path);
+							if (wasDisabled) disabledPaths.delete(path);
+							else disabledPaths.add(path);
 
-						try {
-							writeConfig(configPath, disabledPaths);
-							return undefined;
-						} catch {
-							if (wasDisabled) disabledPaths.add(path);
-							else disabledPaths.delete(path);
-							configError = `Could not write context control config: ${configPath}`;
-							ctx.ui.notify(configError, "error");
-							return "Could not save Context settings";
-						}
+							try {
+								writeConfig(configPath, disabledPaths);
+								return undefined;
+							} catch {
+								if (wasDisabled) disabledPaths.add(path);
+								else disabledPaths.delete(path);
+								configError = `Could not write context control config: ${configPath}`;
+								ctx.ui.notify(configError, "error");
+								return "Could not save Context settings";
+							}
+						},
+						onClose: () => done(undefined),
+					}),
+				{
+					overlay: true,
+					overlayOptions: {
+						width: 120,
+						minWidth: 36,
+						maxHeight: "90%",
+						anchor: "center",
+						margin: 1,
 					},
-					onClose: () => done(undefined),
-				}),
+				},
 			);
 		},
 	});

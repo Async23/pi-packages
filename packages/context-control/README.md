@@ -18,7 +18,7 @@ Run:
 /context
 ```
 
-The Context inspector lists the instruction files discovered by Pi for the current working directory and previews each file's complete contents.
+The centered Context inspector lists the instruction files discovered by Pi for the current working directory and previews each file's complete contents.
 
 - Use Up/Down to select files or scroll the focused preview.
 - Press Space to include or exclude the selected file.
