@@ -26,7 +26,9 @@ When enabled with an `openai-codex` model, the extension adds:
 }
 ```
 
-Fast mode remains enabled for the current Pi session and survives session reload or resume. A new session starts with Fast mode disabled.
+Fast mode is stored globally in `codex-fast.json` under Pi's agent configuration directory (normally `~/.pi/agent/codex-fast.json`). It persists across projects, sessions, reloads, resumes, and Pi restarts.
+
+Each running Pi instance reads the global state when its session starts. `/fast` updates the current instance and writes the new global state. Other Pi instances that are already running keep their in-memory state until their session restarts, `/reload` runs, or Pi restarts.
 
 If another provider is selected, the footer shows a dim, struck-through `fast`; Fast mode takes effect again after selecting an `openai-codex` model.
 

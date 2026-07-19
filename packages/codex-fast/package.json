@@ -1,6 +1,6 @@
 {
   "name": "@async23/pi-codex-fast",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Toggle OpenAI Codex Fast mode in Pi with /fast",
   "type": "module",
   "license": "MIT",
