@@ -8,6 +8,7 @@ A monorepo of independently installable packages for the [Pi coding agent](https
 | --- | --- |
 | [`@async23/pi-codex-fast`](./packages/codex-fast) | Toggle OpenAI Codex Fast mode with `/fast` |
 | [`@async23/pi-context-control`](./packages/context-control) | Enable or disable Context instruction files with `/context` |
+| [`@async23/pi-notify`](./packages/notify) | Native macOS completion notifications with Ghostty/tmux click-to-focus |
 
 ## Development
 
@@ -16,6 +17,7 @@ Test a package directly from the repository:
 ```bash
 pi --no-extensions -e ./packages/codex-fast
 pi --no-extensions -e ./packages/context-control
+pi --no-extensions -e ./packages/notify
 ```
 
 Inspect the files that would be published:
@@ -23,6 +25,13 @@ Inspect the files that would be published:
 ```bash
 npm pack --workspace packages/codex-fast --dry-run
 npm pack --workspace packages/context-control --dry-run
+npm pack --workspace packages/notify --dry-run
+```
+
+Run package tests:
+
+```bash
+npm test
 ```
 
 ## License

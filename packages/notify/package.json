@@ -1,0 +1,45 @@
+{
+  "name": "@async23/pi-notify",
+  "version": "0.1.0",
+  "description": "Native macOS completion notifications for Pi with tmux click-to-focus",
+  "type": "module",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "notifications",
+    "macos",
+    "ghostty",
+    "tmux"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/notify"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/notify#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
+  "files": [
+    "assets",
+    "extensions",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}

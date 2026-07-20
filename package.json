@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "test": "node --test packages/*/tests/*.test.mjs",
     "pack:check": "npm pack --workspaces --dry-run"
   }
 }
