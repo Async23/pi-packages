@@ -1,6 +1,6 @@
 {
   "name": "@async23/pi-context-control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactively enable or disable Pi Context instruction files",
   "type": "module",
   "license": "MIT",
@@ -33,7 +33,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/context-control.ts"
+      "./extensions/index.ts"
     ]
   }
 }
