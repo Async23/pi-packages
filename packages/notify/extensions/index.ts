@@ -441,6 +441,7 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
   let latestPrompt = "";
   let latestAssistant = "";
   let latestError: string | undefined;
+  let latestAborted = false;
   let lastNotifiedKey = "";
 
   pi.on("input", (event) => {
@@ -454,15 +455,23 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
     pendingRawPrompt = undefined;
     latestAssistant = "";
     latestError = undefined;
+    latestAborted = false;
   });
 
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") return;
     if (event.message.stopReason === "error") {
       latestError = compactText(event.message.errorMessage);
+      latestAborted = false;
+      return;
+    }
+    if (event.message.stopReason === "aborted") {
+      latestError = undefined;
+      latestAborted = true;
       return;
     }
     latestError = undefined;
+    latestAborted = false;
     const text = extractMessageText(event.message);
     if (text) latestAssistant = text;
   });
@@ -480,7 +489,9 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
     const answer =
       latestError !== undefined
         ? notificationErrorSummary(latestError)
-        : latestAssistant || latestBranchText(ctx, "assistant");
+        : latestAborted
+          ? "任务已取消。"
+          : latestAssistant || latestBranchText(ctx, "assistant");
     await deliverNotification(pi, ctx, prompt, answer);
   });
 

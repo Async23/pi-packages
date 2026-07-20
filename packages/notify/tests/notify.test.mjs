@@ -201,6 +201,31 @@ test("reports terminal cyber_policy errors instead of completion", async () => {
   ]);
 });
 
+test("reports an aborted task instead of completion", async () => {
+  const { calls, ctx, handlers } = createLifecycleHarness();
+  handlers.get("input")({ text: "停止当前任务", source: "interactive" });
+  handlers.get("before_agent_start")({ prompt: "停止当前任务" });
+  handlers.get("message_end")({
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "尚未完成的部分结果" }],
+      stopReason: "aborted",
+      errorMessage: "Request was aborted",
+    },
+  });
+
+  await handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
+
+  const call = notifierCall(calls);
+  assert.ok(call, "custom Pi notifier should be selected");
+  assert.deepEqual(call.args.slice(2, 6), [
+    "-subtitle",
+    "停止当前任务",
+    "-message",
+    "任务已取消。",
+  ]);
+});
+
 test("clears a transient error when an automatic retry succeeds", async () => {
   const { calls, ctx, handlers } = createLifecycleHarness();
   handlers.get("input")({ text: "继续当前任务", source: "interactive" });
