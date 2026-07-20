@@ -6,7 +6,8 @@ Native macOS completion notifications for the Pi coding agent, with Ghostty/tmux
 
 - Notifies on `agent_settled`, after retries, compaction retries, and queued follow-ups finish.
 - Shows the tmux coordinates and Pi session or project name.
-- Uses the latest user prompt as the subtitle and the final answer as the body.
+- Uses the latest user prompt as the subtitle and the final outcome as the body.
+- Reports terminal provider errors explicitly, including `cyber_policy`, instead of treating them as successful completion.
 - Plays the macOS `Glass` sound by default.
 - Clicking the notification activates Ghostty and selects the original tmux pane.
 - Keeps one notification per Pi session instead of collapsing concurrent sessions together.
@@ -68,7 +69,7 @@ macOS may ask for notification permission the first time it sends a notification
 ```text
 Title:    0:21:1 · session or project name
 Subtitle: latest user prompt
-Body:     final assistant response
+Body:     final assistant response or terminal error
 ```
 
 Long text and image markers are cleaned before display.

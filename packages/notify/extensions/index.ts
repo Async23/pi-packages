@@ -2,7 +2,7 @@
  * Native macOS completion notifications for Pi.
  *
  * - Fires on agent_settled, after retries, compaction, and queued follow-ups.
- * - Shows tmux coordinates, the latest user prompt, and the final answer.
+ * - Shows tmux coordinates, the latest user prompt, and the final outcome.
  * - Clicking the notification activates Ghostty and selects the original pane.
  * - Run /pi-notify-setup once for a dedicated sender app and icon.
  * - Run /pi-notify-test after /reload to verify delivery and click-to-focus.
@@ -40,6 +40,8 @@ const SUBTITLE_MAX_WIDTH = 48;
 const THREAD_TITLE_MAX_WIDTH = 48;
 const BODY_MAX_LENGTH = 140;
 const IMAGE_MARKER_RE = /\[\s*Image\s+#\d+\s*\]/giu;
+const CYBER_POLICY_ERROR_RE =
+  /\bcyber(?:_|-)?policy\b|flagged for possible cybersecurity risk|trusted access for cyber/iu;
 const GENERIC_HEADINGS = new Set(["结论", "完成内容", "验证结果", "结果", "总结"]);
 
 export interface TmuxTarget {
@@ -157,6 +159,15 @@ export function notificationSummary(value: unknown): string {
   return first.length <= BODY_MAX_LENGTH
     ? first
     : first.slice(0, BODY_MAX_LENGTH - 3) + "...";
+}
+
+export function notificationErrorSummary(value: unknown): string {
+  const error = compactText(value);
+  if (CYBER_POLICY_ERROR_RE.test(error)) {
+    return "任务被 cyber_policy 拦截；请返回 Pi 查看详情。";
+  }
+  const detail = error.replace(/^(?:Codex error:\s*)/iu, "") || "未知错误";
+  return notificationSummary(`任务执行失败：${detail}`);
 }
 
 export function extractMessageText(message: unknown): string {
@@ -429,6 +440,7 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
   let pendingRawPrompt: string | undefined;
   let latestPrompt = "";
   let latestAssistant = "";
+  let latestError: string | undefined;
   let lastNotifiedKey = "";
 
   pi.on("input", (event) => {
@@ -441,10 +453,16 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
     latestPrompt = pendingRawPrompt ?? event.prompt;
     pendingRawPrompt = undefined;
     latestAssistant = "";
+    latestError = undefined;
   });
 
   pi.on("message_end", (event) => {
     if (event.message.role !== "assistant") return;
+    if (event.message.stopReason === "error") {
+      latestError = compactText(event.message.errorMessage);
+      return;
+    }
+    latestError = undefined;
     const text = extractMessageText(event.message);
     if (text) latestAssistant = text;
   });
@@ -459,7 +477,10 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
     lastNotifiedKey = notificationKey;
 
     const prompt = latestPrompt || latestBranchText(ctx, "user");
-    const answer = latestAssistant || latestBranchText(ctx, "assistant");
+    const answer =
+      latestError !== undefined
+        ? notificationErrorSummary(latestError)
+        : latestAssistant || latestBranchText(ctx, "assistant");
     await deliverNotification(pi, ctx, prompt, answer);
   });
 
