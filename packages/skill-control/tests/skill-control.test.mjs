@@ -66,19 +66,19 @@ test("replaceSkillsSection swaps or inserts available_skills", () => {
 	assert.equal(replaceSkillsSection("no marker", "", effective), `no marker${effective}`);
 });
 
-test("model policy can hide normal skills and expose manual-only skills", () => {
+test("model policy can hide normal skills and expose user-only Skill defaults", () => {
 	const alpha = makeSkill("alpha");
-	const manual = makeSkill("manual", { disableModelInvocation: true });
-	const skills = [alpha, manual];
+	const userOnly = makeSkill("user-only", { disableModelInvocation: true });
+	const skills = [alpha, userOnly];
 	const prompt = `prefix${formatSkillsForPrompt(skills)}\nCurrent working directory: /tmp`;
 	const globalOverrides = new Map([
-		[canonicalPath(alpha.filePath), accessForState("manual")],
-		[canonicalPath(manual.filePath), accessForState("enabled")],
+		[canonicalPath(alpha.filePath), accessForState("user")],
+		[canonicalPath(userOnly.filePath), accessForState("both")],
 	]);
 
 	const effective = applySkillAccessToPrompt(prompt, skills, globalOverrides, new Map());
 	assert.doesNotMatch(effective, /<name>alpha<\/name>/);
-	assert.match(effective, /<name>manual<\/name>/);
+	assert.match(effective, /<name>user-only<\/name>/);
 });
 
 test("user-only policy changes leave the model prompt untouched", () => {
@@ -100,7 +100,7 @@ test("project overrides global, which overrides the Skill default", () => {
 		source: "global",
 	});
 
-	const project = new Map([[path, accessForState("disabled")]]);
+	const project = new Map([[path, accessForState("neither")]]);
 	assert.deepEqual(resolveSkillAccess(path, defaultSkillAccess(skill), global, project), {
 		access: { model: false, user: false },
 		source: "project",
@@ -108,17 +108,18 @@ test("project overrides global, which overrides the Skill default", () => {
 });
 
 test("all four access states map to independent model and user permissions", () => {
-	assert.deepEqual(accessForState("enabled"), { model: true, user: true });
+	assert.deepEqual(accessForState("both"), { model: true, user: true });
 	assert.deepEqual(accessForState("model"), { model: true, user: false });
-	assert.deepEqual(accessForState("manual"), { model: false, user: true });
-	assert.deepEqual(accessForState("disabled"), { model: false, user: false });
-	for (const state of ["enabled", "model", "manual", "disabled"]) {
+	assert.deepEqual(accessForState("user"), { model: false, user: true });
+	assert.deepEqual(accessForState("neither"), { model: false, user: false });
+	for (const state of ["both", "model", "user", "neither"]) {
 		assert.equal(skillAccessState(accessForState(state)), state);
 	}
-	assert.equal(accessStateLabel("manual"), "Manual only");
+	assert.equal(accessStateLabel("both"), "Model + User");
+	assert.equal(accessStateLabel("user"), "User only");
 });
 
-test("legacy disabledPaths migrate to v3 disabled overrides", () => {
+test("legacy disabledPaths migrate to v3 neither overrides", () => {
 	const configPath = join(skillRoot, "legacy", "skill-control.json");
 	mkdirSync(join(skillRoot, "legacy"), { recursive: true });
 	const skill = makeSkill("legacy-disabled");
@@ -197,8 +198,8 @@ function makePanelItem(name, sourceKind, sourceLabel, options = {}) {
 
 function makePanel(onDone = () => undefined) {
 	const items = [
-		makePanelItem("agents-enabled", "agents", "Agents (user)"),
-		makePanelItem("agents-manual", "agents", "Agents (user)", {
+		makePanelItem("agents-both", "agents", "Agents (user)"),
+		makePanelItem("agents-user", "agents", "Agents (user)", {
 			defaultAccess: { model: false, user: true },
 		}),
 		makePanelItem("agents-project", "agents", "Agents (project)", { sourceScope: "project" }),
@@ -218,7 +219,7 @@ function makePanel(onDone = () => undefined) {
 		},
 		items,
 		globalOverrides: new Map([["/skills/settings-model/SKILL.md", accessForState("model")]]),
-		projectOverrides: new Map([["/skills/agents-project/SKILL.md", accessForState("disabled")]]),
+		projectOverrides: new Map([["/skills/agents-project/SKILL.md", accessForState("neither")]]),
 		projectTrusted: true,
 		onDone,
 	});
@@ -228,7 +229,8 @@ test("panel presents actual discovered sources and all four states without Extra
 	const panel = makePanel();
 	const output = panel.render(120).join("\n");
 
-	assert.match(output, /Visibility\s+● 3 enabled\s+◆ 1 model only\s+◐ 1 manual only\s+○ 1 disabled/);
+	assert.match(output, /Access\s+● 3 Model \+ User\s+◐ 1 Model only\s+◑ 1 User only\s+○ 1 Neither/);
+	assert.doesNotMatch(output, /◆|Enabled|Manual only|Disabled/);
 	assert.match(output, /Sources\s+\[ALL 6\]\s+Agents 3\s+Package 1\s+Settings 1\s+CLI 1/);
 	assert.doesNotMatch(output, /Extra scan|Claude off|Codex off/);
 	assert.match(output, /Space access\s+Ctrl\+S apply/);
@@ -244,23 +246,24 @@ test("search accepts h and l instead of treating them as hidden navigation keys"
 	assert.match(output, /cli-skill/);
 });
 
-test("Space opens a direct four-state selector with Global and Project scopes", () => {
+test("Space opens a permission matrix with All projects and This project scopes", () => {
 	const panel = makePanel();
 	panel.render(120);
 	panel.handleInput(" ");
 	let output = panel.render(120).join("\n");
 
-	assert.match(output, /Set Skill access/);
-	assert.match(output, /\[Global\]\s+Project/);
-	assert.match(output, /Enabled\s+Model on · \/skill on/);
-	assert.match(output, /Model only\s+Model on · \/skill off/);
-	assert.match(output, /Manual only\s+Model off · \/skill on/);
-	assert.match(output, /Disabled\s+Model off · \/skill off/);
-	assert.match(output, /Reset to inherited/);
+	assert.match(output, /Who can use this Skill\?/);
+	assert.match(output, /Save for\s+\[All projects\]\s+This project/);
+	assert.match(output, /Model\s+You \(\/skill\)/);
+	assert.match(output, /●\s+Model \+ User\s+✓\s+✓/);
+	assert.match(output, /◐\s+Model only\s+✓\s+—/);
+	assert.match(output, /◑\s+User only\s+—\s+✓/);
+	assert.match(output, /○\s+Neither\s+—\s+—/);
+	assert.match(output, /Use inherited access\s+Use Skill default/);
 
 	panel.handleInput("\t");
 	output = panel.render(120).join("\n");
-	assert.match(output, /Global\s+\[Project\]/);
+	assert.match(output, /All projects\s+\[This project\]/);
 });
 
 test("scope selector shows inheritance for the scope being edited", () => {
@@ -271,13 +274,13 @@ test("scope selector shows inheritance for the scope being edited", () => {
 	panel.handleInput(" ");
 
 	let output = panel.render(120).join("\n");
-	assert.match(output, /\[Project\]/);
-	assert.match(output, /project override exists/);
+	assert.match(output, /\[This project\]/);
+	assert.match(output, /Current\s+Neither · saved for This project/);
 
 	panel.handleInput("\t");
 	output = panel.render(120).join("\n");
-	assert.match(output, /\[Global\]/);
-	assert.match(output, /Currently inherited · Enabled/);
+	assert.match(output, /\[All projects\]/);
+	assert.match(output, /Current\s+Model \+ User · from Skill default/);
 });
 
 test("state choices stay draft-only until Ctrl+S applies them", () => {
@@ -294,7 +297,7 @@ test("state choices stay draft-only until Ctrl+S applies them", () => {
 	assert.match(panel.render(120).join("\n"), /Pending 1/);
 	panel.handleInput("\x13");
 	assert.equal(result.action, "apply");
-	assert.deepEqual(result.globalOverrides.get("/skills/agents-enabled/SKILL.md"), {
+	assert.deepEqual(result.globalOverrides.get("/skills/agents-both/SKILL.md"), {
 		model: true,
 		user: false,
 	});
@@ -322,7 +325,7 @@ test("panel wraps the compact header and dialogs within narrow terminals", () =>
 	let lines = panel.render(width);
 	let output = lines.join("\n");
 	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
-	for (const expected of ["Visibility", "Sources", "Agents 3", "Package 1", "Search", "filter skills_"]) {
+	for (const expected of ["Access", "Sources", "Agents 3", "Package 1", "Search", "filter skills_"]) {
 		assert.ok(output.includes(expected), `missing narrow header content: ${expected}`);
 	}
 
@@ -330,5 +333,5 @@ test("panel wraps the compact header and dialogs within narrow terminals", () =>
 	lines = panel.render(width);
 	output = lines.join("\n");
 	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
-	assert.match(output, /Set Skill access/);
+	assert.match(output, /Who can use this Skill\?/);
 });

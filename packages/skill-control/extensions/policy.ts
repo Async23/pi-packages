@@ -6,7 +6,7 @@ export const CONFIG_VERSION = 3;
 export const CONFIG_FILE_NAME = "skill-control.json";
 
 export type PolicyScope = "global" | "project";
-export type SkillAccessState = "enabled" | "model" | "manual" | "disabled";
+export type SkillAccessState = "both" | "model" | "user" | "neither";
 
 export interface SkillAccess {
 	model: boolean;
@@ -37,13 +37,13 @@ export interface ReadPolicyResult {
 }
 
 export const ACCESS_BY_STATE: Readonly<Record<SkillAccessState, SkillAccess>> = {
-	enabled: { model: true, user: true },
+	both: { model: true, user: true },
 	model: { model: true, user: false },
-	manual: { model: false, user: true },
-	disabled: { model: false, user: false },
+	user: { model: false, user: true },
+	neither: { model: false, user: false },
 };
 
-export const ACCESS_STATE_ORDER: readonly SkillAccessState[] = ["enabled", "model", "manual", "disabled"];
+export const ACCESS_STATE_ORDER: readonly SkillAccessState[] = ["both", "model", "user", "neither"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -90,10 +90,10 @@ export function replaceOverrides(target: SkillOverrides, source: ReadonlyMap<str
 }
 
 export function skillAccessState(access: SkillAccess): SkillAccessState {
-	if (access.model && access.user) return "enabled";
+	if (access.model && access.user) return "both";
 	if (access.model) return "model";
-	if (access.user) return "manual";
-	return "disabled";
+	if (access.user) return "user";
+	return "neither";
 }
 
 export function accessForState(state: SkillAccessState): SkillAccess {
@@ -165,7 +165,7 @@ export function readPolicyConfig(configPath: string): ReadPolicyResult {
 		if (isLegacyConfig(parsed)) {
 			return {
 				overrides: new Map(
-					parsed.disabledPaths.map((path) => [canonicalPath(path), accessForState("disabled")]),
+					parsed.disabledPaths.map((path) => [canonicalPath(path), accessForState("neither")]),
 				),
 				migrated: true,
 			};

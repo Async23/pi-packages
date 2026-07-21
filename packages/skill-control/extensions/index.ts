@@ -279,28 +279,21 @@ export function classifySkillSource(
 
 export function accessStateLabel(state: SkillAccessState): string {
 	switch (state) {
-		case "enabled":
-			return "Enabled";
+		case "both":
+			return "Model + User";
 		case "model":
 			return "Model only";
-		case "manual":
-			return "Manual only";
-		case "disabled":
-			return "Disabled";
+		case "user":
+			return "User only";
+		case "neither":
+			return "Neither";
 	}
 }
 
-export function accessStateDescription(state: SkillAccessState): string {
-	switch (state) {
-		case "enabled":
-			return "Model on · /skill on";
-		case "model":
-			return "Model on · /skill off";
-		case "manual":
-			return "Model off · /skill on";
-		case "disabled":
-			return "Model off · /skill off";
-	}
+function accessSourceLabel(source: PolicyScope | "default"): string {
+	if (source === "project") return "This project";
+	if (source === "global") return "All projects";
+	return "Skill default";
 }
 
 function formatBytes(bytes: number): string {
@@ -615,7 +608,7 @@ export class SkillControlPanel implements Component {
 		}
 		if (matchesKey(data, Key.tab)) {
 			if (!this.#projectTrusted) {
-				this.#flash = { kind: "warning", text: "Project scope requires a trusted project" };
+				this.#flash = { kind: "warning", text: "This project access requires a trusted project" };
 				return;
 			}
 			dialog.scope = dialog.scope === "global" ? "project" : "global";
@@ -659,33 +652,53 @@ export class SkillControlPanel implements Component {
 	}
 
 	#renderStateDialog(width: number): string[] {
-		if (width < 4) return [truncateToWidth("Set access", width, "")];
+		if (width < 4) return [truncateToWidth("Skill access", width, "")];
 		const innerWidth = width - 2;
 		const dialog = this.#stateDialog;
 		const item = dialog ? this.#items.find((candidate) => candidate.path === dialog.path) : undefined;
-		if (!dialog || !item) return [truncateToWidth("Set access", width, "")];
+		if (!dialog || !item) return [truncateToWidth("Skill access", width, "")];
 
 		const scopeText = [
-			dialog.scope === "global" ? this.#theme.fg("accent", this.#theme.bold("[Global]")) : this.#theme.fg("muted", "Global"),
-			dialog.scope === "project" ? this.#theme.fg("accent", this.#theme.bold("[Project]")) : this.#theme.fg("muted", "Project"),
+			dialog.scope === "global"
+				? this.#theme.fg("accent", this.#theme.bold("[All projects]"))
+				: this.#theme.fg("muted", "All projects"),
+			dialog.scope === "project"
+				? this.#theme.fg("accent", this.#theme.bold("[This project]"))
+				: this.#theme.fg("muted", "This project"),
 		].join("  ");
-		const explicit = this.#scopeOverrides(dialog.scope).has(item.path);
+		const explicitAccess = this.#scopeOverrides(dialog.scope).get(item.path);
 		const inheritedState = this.#inheritedStateFor(item, dialog.scope);
-		const lines = this.#topBorder(width, "Set Skill access");
+		const currentState = explicitAccess ? skillAccessState(explicitAccess) : inheritedState;
+		const currentSource = explicitAccess
+			? dialog.scope === "global"
+				? "saved for All projects"
+				: "saved for This project"
+			: dialog.scope === "project" && this.#globalOverrides.has(item.path)
+				? "from All projects"
+				: "from Skill default";
+		const lines = this.#topBorder(width, "Who can use this Skill?");
 		lines.push(this.#fullLine(this.#theme.fg("accent", this.#theme.bold(item.name)), innerWidth));
-		lines.push(this.#fullLine(`${this.#theme.fg("muted", "Apply to")}  ${scopeText}`, innerWidth));
+		lines.push(this.#fullLine(`${this.#theme.fg("muted", "Save for")}  ${scopeText}`, innerWidth));
 		lines.push(
 			this.#fullLine(
-				this.#theme.fg(
+				`${this.#theme.fg("muted", "Current")}  ${this.#theme.fg("text", accessStateLabel(currentState))}${this.#theme.fg(
 					"dim",
-					explicit
-						? `${dialog.scope} override exists`
-						: `Currently inherited · ${accessStateLabel(inheritedState)}`,
-				),
+					` · ${currentSource}`,
+				)}`,
 				innerWidth,
 			),
 		);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
+		lines.push(
+			this.#fullLine(
+				this.#joined(
+					"",
+					this.#accessColumns(this.#theme.fg("muted", "Model"), this.#theme.fg("muted", "You (/skill)")),
+					innerWidth - 2,
+				),
+				innerWidth,
+			),
+		);
 
 		for (let index = 0; index < ACCESS_STATE_ORDER.length; index++) {
 			const state = ACCESS_STATE_ORDER[index];
@@ -693,15 +706,23 @@ export class SkillControlPanel implements Component {
 			const selected = dialog.selectedIndex === index;
 			const icon = this.#stateIcon(state);
 			const label = this.#theme.fg(selected ? "accent" : "text", accessStateLabel(state));
-			const description = this.#theme.fg("dim", accessStateDescription(state));
-			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, description, innerWidth - 2), innerWidth, selected));
+			const access = accessForState(state);
+			const permissions = this.#accessColumns(
+				this.#theme.fg(access.model ? "accent" : "dim", access.model ? "✓" : "—"),
+				this.#theme.fg(access.user ? "warning" : "dim", access.user ? "✓" : "—"),
+			);
+			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, permissions, innerWidth - 2), innerWidth, selected));
 		}
 		const resetSelected = dialog.selectedIndex === ACCESS_STATE_ORDER.length;
+		const inheritedSource =
+			dialog.scope === "project" && this.#globalOverrides.has(item.path)
+				? "Use All projects setting"
+				: "Use Skill default";
 		lines.push(
 			this.#fullLine(
 				this.#joined(
-					`${this.#theme.fg("muted", "↩")}  ${this.#theme.fg(resetSelected ? "accent" : "text", "Reset to inherited")}`,
-					this.#theme.fg("dim", dialog.scope === "project" ? "Use Global or Skill default" : "Use Skill default"),
+					`${this.#theme.fg("muted", "↩")}  ${this.#theme.fg(resetSelected ? "accent" : "text", "Use inherited access")}`,
+					this.#theme.fg("dim", inheritedSource),
 					innerWidth - 2,
 				),
 				innerWidth,
@@ -709,7 +730,9 @@ export class SkillControlPanel implements Component {
 			),
 		);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
-		const help = this.#projectTrusted ? "↑↓ select   Tab scope   Enter choose   Esc cancel" : "↑↓ select   Enter choose   Esc cancel";
+		const help = this.#projectTrusted
+			? "↑↓ select   Tab change scope   Enter choose   Esc cancel"
+			: "↑↓ select   Enter choose   Esc cancel";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -869,6 +892,17 @@ export class SkillControlPanel implements Component {
 		return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 	}
 
+	#center(text: string, width: number): string {
+		const clipped = truncateToWidth(text, Math.max(0, width), "");
+		const remaining = Math.max(0, width - visibleWidth(clipped));
+		const left = Math.floor(remaining / 2);
+		return `${" ".repeat(left)}${clipped}${" ".repeat(remaining - left)}`;
+	}
+
+	#accessColumns(model: string, user: string): string {
+		return `${this.#center(model, 5)}  ${this.#center(user, 12)}`;
+	}
+
 	#joined(left: string, right: string, width: number): string {
 		const gap = 2;
 		const rightWidth = visibleWidth(right);
@@ -920,24 +954,24 @@ export class SkillControlPanel implements Component {
 
 	#summaryEntries(): { text: string; width: number }[] {
 		const scoped = this.#providerItems();
-		let enabledCount = 0;
+		let bothCount = 0;
 		let modelCount = 0;
-		let manualCount = 0;
-		let disabledCount = 0;
+		let userCount = 0;
+		let neitherCount = 0;
 		for (const item of scoped) {
 			const state = this.#stateFor(item);
-			if (state === "enabled") enabledCount += 1;
+			if (state === "both") bothCount += 1;
 			else if (state === "model") modelCount += 1;
-			else if (state === "manual") manualCount += 1;
-			else disabledCount += 1;
+			else if (state === "user") userCount += 1;
+			else neitherCount += 1;
 		}
 		const entries = [
-			`${this.#theme.fg("accent", "●")} ${this.#theme.fg("text", `${enabledCount} enabled`)}`,
-			`${this.#theme.fg("accent", "◆")} ${this.#theme.fg("muted", `${modelCount} model only`)}`,
-			`${this.#theme.fg("warning", "◐")} ${this.#theme.fg("muted", `${manualCount} manual only`)}`,
-			`${this.#theme.fg(disabledCount > 0 ? "warning" : "dim", "○")} ${this.#theme.fg(
-				disabledCount > 0 ? "warning" : "dim",
-				`${disabledCount} disabled`,
+			`${this.#theme.fg("accent", "●")} ${this.#theme.fg("text", `${bothCount} Model + User`)}`,
+			`${this.#theme.fg("accent", "◐")} ${this.#theme.fg("muted", `${modelCount} Model only`)}`,
+			`${this.#theme.fg("warning", "◑")} ${this.#theme.fg("muted", `${userCount} User only`)}`,
+			`${this.#theme.fg(neitherCount > 0 ? "warning" : "dim", "○")} ${this.#theme.fg(
+				neitherCount > 0 ? "warning" : "dim",
+				`${neitherCount} Neither`,
 			)}`,
 		];
 		return entries.map((text) => ({ text, width: visibleWidth(text) }));
@@ -945,13 +979,13 @@ export class SkillControlPanel implements Component {
 
 	#stateIcon(state: SkillAccessState): string {
 		switch (state) {
-			case "enabled":
+			case "both":
 				return this.#theme.fg("accent", "●");
 			case "model":
-				return this.#theme.fg("accent", "◆");
-			case "manual":
-				return this.#theme.fg("warning", "◐");
-			case "disabled":
+				return this.#theme.fg("accent", "◐");
+			case "user":
+				return this.#theme.fg("warning", "◑");
+			case "neither":
 				return this.#theme.fg("dim", "○");
 		}
 	}
@@ -1152,10 +1186,13 @@ export class SkillControlPanel implements Component {
 			const icon = this.#stateIcon(state);
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
-				: state === "disabled"
+				: state === "neither"
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
-			const badge = this.#theme.fg(state === "disabled" ? "dim" : state === "manual" ? "warning" : "muted", accessStateLabel(state));
+			const badge = this.#theme.fg(
+				state === "neither" ? "dim" : state === "user" ? "warning" : "muted",
+				accessStateLabel(state),
+			);
 			const content = this.#joined(`${icon}  ${label}`, badge, Math.max(0, width - 2));
 			return this.#paneContent(content, width, selected && focused);
 		});
@@ -1200,7 +1237,7 @@ export class SkillControlPanel implements Component {
 		const resolution = this.#resolutionFor(item);
 		const state = skillAccessState(resolution.access);
 		const sourceLine = truncateToWidth(
-			`${item.sourceLabel} · ${accessStateLabel(state)} · ${resolution.source}`,
+			`${item.sourceLabel} · ${accessStateLabel(state)} · ${accessSourceLabel(resolution.source)}`,
 			Math.max(1, width - 2),
 			"…",
 		);
@@ -1281,7 +1318,7 @@ export class SkillControlPanel implements Component {
 		const listWidth = Math.min(44, Math.max(32, Math.floor(innerWidth * 0.38)));
 		const previewWidth = innerWidth - listWidth - 1;
 		const lines = this.#topBorder(width, "Skills");
-		for (const summaryLine of this.#labeledEntryLines("Visibility", this.#summaryEntries(), headerWidth)) {
+		for (const summaryLine of this.#labeledEntryLines("Access", this.#summaryEntries(), headerWidth)) {
 			lines.push(this.#fullLine(summaryLine, innerWidth));
 		}
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
@@ -1332,7 +1369,7 @@ export class SkillControlPanel implements Component {
 		const innerWidth = width - 2;
 		const headerWidth = Math.max(1, innerWidth - 2);
 		const lines = this.#topBorder(width, "Skills");
-		for (const summaryLine of this.#labeledEntryLines("Visibility", this.#summaryEntries(), headerWidth)) {
+		for (const summaryLine of this.#labeledEntryLines("Access", this.#summaryEntries(), headerWidth)) {
 			lines.push(this.#fullLine(summaryLine, innerWidth));
 		}
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
@@ -1360,8 +1397,8 @@ export class SkillControlPanel implements Component {
 			lines.push(
 				this.#fullLine(
 					this.#theme.fg(
-						state === "disabled" ? "warning" : "muted",
-						`${selected.sourceLabel} · ${accessStateLabel(state)} · ${resolution.source}`,
+						state === "neither" ? "warning" : "muted",
+						`${selected.sourceLabel} · ${accessStateLabel(state)} · ${accessSourceLabel(resolution.source)}`,
 					),
 					innerWidth,
 				),
@@ -1612,7 +1649,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 		if (!command) return;
 		const path = canonicalPath(command.sourceInfo.path, ctx.cwd);
 		if (resolveUserAccess(path, globalOverrides, projectOverrides)) return;
-		ctx.ui.notify(`Skill '${skillName}' is disabled for /skill. Use /skills to change access.`, "warning");
+		ctx.ui.notify(`Skill '${skillName}' isn't available through /skill. Use /skills to change access.`, "warning");
 		return { action: "handled" };
 	});
 }

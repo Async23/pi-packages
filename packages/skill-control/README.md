@@ -42,23 +42,23 @@ Model access and direct user access are independent:
 
 | State | Model sees the Skill | `/skill:name` is shown and accepted |
 | --- | --- | --- |
-| **Enabled** | Yes | Yes |
+| **Model + User** | Yes | Yes |
 | **Model only** | Yes | No |
-| **Manual only** | No | Yes |
-| **Disabled** | No | No |
+| **User only** | No | Yes |
+| **Neither** | No | No |
 
-`disable-model-invocation: true` maps to **Manual only** by default. An explicit policy can override that default in either direction.
+The inspector uses one Unicode symbol for each state: `●` Model + User, `◐` Model only, `◑` User only, and `○` Neither. `disable-model-invocation: true` maps to **User only** by default. An explicit policy can override that default in either direction.
 
-Press Space, choose any of the four states, then press Enter. While the selector is open, Tab switches the write scope:
+Press Space, choose any of the four states in the Model/User permission matrix, then press Enter. While the selector is open, Tab switches where the choice is saved:
 
-- **Global** — applies in every project.
-- **Project** — applies only in the current trusted project.
-- **Reset to inherited** — removes the override at that scope.
+- **All projects** — applies everywhere for this user.
+- **This project** — applies only in the current trusted project.
+- **Use inherited access** — removes the saved choice at that scope.
 
 Effective policy precedence is:
 
 ```text
-Project override > Global override > Skill frontmatter default
+This project > All projects > Skill frontmatter default
 ```
 
 ## Configuration
@@ -89,7 +89,7 @@ Version 3 stores explicit model/user permissions by canonical `SKILL.md` path:
 }
 ```
 
-Version 1 and 2 `disabledPaths` entries are read as **Disabled** and are written in version 3 format on the next Apply. The old `discover` setting is no longer used; configure additional Skill paths through Pi's native `skills` setting instead:
+Version 1 and 2 `disabledPaths` entries are read as **Neither** and are written in version 3 format on the next Apply. The old `discover` setting is no longer used; configure additional Skill paths through Pi's native `skills` setting instead:
 
 ```json
 {
