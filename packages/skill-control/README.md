@@ -30,7 +30,7 @@ The Skills inspector lists skills discovered for the current session, groups the
 
 - Use Up/Down to select skills or scroll the focused preview.
 - Press Space to include or exclude the selected skill from the next model prompt.
-- Use Left/Right to switch provider tabs. All source tabs are always listed (`ALL`, `Agents`, `Pi`, `Claude`, `Codex`, `OpenCode`, `Package`, …), including empty ones with count `0`.
+- Use Left/Right to switch provider tabs. Filters are grouped as `Scope`, `User`, `Project`, and `Other`, and navigation follows that visual order. Every source remains visible (`ALL`, `Agents`, `Pi`, `Claude`, `Codex`, `OpenCode`, `Package`, …), including empty ones with count `0`.
 - Badges:
   - **Model** — included in `<available_skills>`
   - **Manual** — `disable-model-invocation: true`; only `/skill:name`

@@ -111,69 +111,112 @@ interface ProviderTab {
 	id: string;
 	label: string;
 	shortLabel: string;
+	group: ProviderGroupId;
 	match: (item: SkillListItem) => boolean;
 }
 
+type ProviderGroupId = "scope" | "user" | "project" | "other";
+
+const PROVIDER_GROUPS: { id: ProviderGroupId; label: string }[] = [
+	{ id: "scope", label: "Scope" },
+	{ id: "user", label: "User" },
+	{ id: "project", label: "Project" },
+	{ id: "other", label: "Other" },
+];
+
 const PROVIDER_TABS: ProviderTab[] = [
-	{ id: "all", label: ALL_PROVIDERS_TAB, shortLabel: "ALL", match: () => true },
+	{ id: "all", label: ALL_PROVIDERS_TAB, shortLabel: "ALL", group: "scope", match: () => true },
 	{
 		id: "agents-user",
 		label: "Agents (user)",
 		shortLabel: "Agents",
+		group: "user",
 		match: (item) => item.sourceLabel === "Agents (user)",
 	},
 	{
-		id: "agents-project",
-		label: "Agents (project)",
-		shortLabel: "Agents/p",
-		match: (item) => item.sourceLabel === "Agents (project)",
-	},
-	{ id: "pi-user", label: "Pi (user)", shortLabel: "Pi", match: (item) => item.sourceLabel === "Pi (user)" },
-	{
-		id: "pi-project",
-		label: "Pi (project)",
-		shortLabel: "Pi/p",
-		match: (item) => item.sourceLabel === "Pi (project)",
+		id: "pi-user",
+		label: "Pi (user)",
+		shortLabel: "Pi",
+		group: "user",
+		match: (item) => item.sourceLabel === "Pi (user)",
 	},
 	{
 		id: "claude-user",
 		label: "Claude (user)",
 		shortLabel: "Claude",
+		group: "user",
 		match: (item) => item.sourceLabel === "Claude (user)",
-	},
-	{
-		id: "claude-project",
-		label: "Claude (project)",
-		shortLabel: "Claude/p",
-		match: (item) => item.sourceLabel === "Claude (project)",
 	},
 	{
 		id: "codex-user",
 		label: "Codex (user)",
 		shortLabel: "Codex",
+		group: "user",
 		match: (item) => item.sourceLabel === "Codex (user)",
-	},
-	{
-		id: "codex-project",
-		label: "Codex (project)",
-		shortLabel: "Codex/p",
-		match: (item) => item.sourceLabel === "Codex (project)",
 	},
 	{
 		id: "opencode-user",
 		label: "OpenCode (user)",
 		shortLabel: "OpenCode",
+		group: "user",
 		match: (item) => item.sourceLabel === "OpenCode (user)",
+	},
+	{
+		id: "agents-project",
+		label: "Agents (project)",
+		shortLabel: "Agents",
+		group: "project",
+		match: (item) => item.sourceLabel === "Agents (project)",
+	},
+	{
+		id: "pi-project",
+		label: "Pi (project)",
+		shortLabel: "Pi",
+		group: "project",
+		match: (item) => item.sourceLabel === "Pi (project)",
+	},
+	{
+		id: "claude-project",
+		label: "Claude (project)",
+		shortLabel: "Claude",
+		group: "project",
+		match: (item) => item.sourceLabel === "Claude (project)",
+	},
+	{
+		id: "codex-project",
+		label: "Codex (project)",
+		shortLabel: "Codex",
+		group: "project",
+		match: (item) => item.sourceLabel === "Codex (project)",
 	},
 	{
 		id: "opencode-project",
 		label: "OpenCode (project)",
-		shortLabel: "OpenCode/p",
+		shortLabel: "OpenCode",
+		group: "project",
 		match: (item) => item.sourceLabel === "OpenCode (project)",
 	},
-	{ id: "package", label: "Package", shortLabel: "Package", match: (item) => item.sourceKind === "package" },
-	{ id: "project", label: "Project", shortLabel: "Project", match: (item) => item.sourceLabel === "Project" },
-	{ id: "other", label: "Other", shortLabel: "Other", match: (item) => item.sourceLabel === "Other" },
+	{
+		id: "package",
+		label: "Package",
+		shortLabel: "Package",
+		group: "other",
+		match: (item) => item.sourceKind === "package",
+	},
+	{
+		id: "project",
+		label: "Project",
+		shortLabel: "Project",
+		group: "other",
+		match: (item) => item.sourceLabel === "Project",
+	},
+	{
+		id: "other",
+		label: "Other",
+		shortLabel: "Other",
+		group: "other",
+		match: (item) => item.sourceLabel === "Other",
+	},
 ];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -452,7 +495,7 @@ function writeConfig(
 	renameSync(temporaryPath, configPath);
 }
 
-class SkillControlPanel implements Component {
+export class SkillControlPanel implements Component {
 	readonly #tui: TUI;
 	readonly #theme: Theme;
 	readonly #keybindings: KeybindingsManager;
@@ -743,7 +786,7 @@ class SkillControlPanel implements Component {
 		return Math.max(1, Math.min(this.#maximumOverlayHeight(), Math.floor(this.#tui.terminal.rows * 0.78)));
 	}
 
-	#summary(): string {
+	#summaryEntries(): { text: string; width: number }[] {
 		const scoped = this.#providerItems();
 		let modelCount = 0;
 		let manualCount = 0;
@@ -754,48 +797,67 @@ class SkillControlPanel implements Component {
 			else if (visibility === "manual") manualCount += 1;
 			else excludedCount += 1;
 		}
-		const parts = [
-			this.#theme.fg("text", `${modelCount} model`),
-			this.#theme.fg("muted", `${manualCount} manual`),
-			this.#theme.fg(excludedCount > 0 ? "warning" : "dim", `${excludedCount} excluded`),
+		const entries = [
+			`${this.#theme.fg("accent", "●")} ${this.#theme.fg("text", `${modelCount} model`)}`,
+			`${this.#theme.fg("warning", "◐")} ${this.#theme.fg("muted", `${manualCount} manual`)}`,
+			`${this.#theme.fg(excludedCount > 0 ? "warning" : "dim", "○")} ${this.#theme.fg(
+				excludedCount > 0 ? "warning" : "dim",
+				`${excludedCount} excluded`,
+			)}`,
 		];
-		return parts.join(this.#theme.fg("dim", "  ·  "));
+		return entries.map((text) => ({ text, width: visibleWidth(text) }));
 	}
 
-	#providerTabLines(width: number): string[] {
-		const contentWidth = Math.max(1, width - 2);
-		const activeIndex = Math.max(0, this.#providerIndex);
-		const separator = this.#theme.fg("dim", " · ");
-		const separatorWidth = visibleWidth(" · ");
+	#labelWidth(width: number): number {
+		return width >= 30 ? Math.min(14, width - 1) : 0;
+	}
 
-		const style = (text: string, index: number, empty: boolean) => {
-			if (index === activeIndex) return this.#theme.fg("accent", this.#theme.bold(`[${text}]`));
-			if (empty) return this.#theme.fg("dim", text);
-			return this.#theme.fg("muted", text);
-		};
+	#labelPrefix(label: string, width: number): string {
+		if (width <= 0) return "";
+		const gap = Math.min(2, width);
+		const textWidth = Math.max(0, width - gap);
+		const clipped = truncateToWidth(label, textWidth, "");
+		const padded = `${clipped}${" ".repeat(Math.max(0, textWidth - visibleWidth(clipped)))}`;
+		return `${this.#theme.fg("muted", padded)}${" ".repeat(gap)}`;
+	}
 
-		const entries = PROVIDER_TABS.map((provider, index) => {
-			const count = this.#providerCount(provider);
-			const empty = count === 0 && provider.id !== "all";
-			const full = `${provider.label} (${count})`;
-			const short = `${provider.shortLabel} (${count})`;
-			const preferred = style(full, index, empty);
-			if (visibleWidth(preferred) <= contentWidth) {
-				return { text: preferred, width: visibleWidth(preferred) };
-			}
-			const compact = style(short, index, empty);
-			if (visibleWidth(compact) <= contentWidth) {
-				return { text: compact, width: visibleWidth(compact) };
-			}
-			const clipped = truncateToWidth(short, contentWidth, "…");
-			const clippedStyled = style(clipped, index, empty);
-			return { text: clippedStyled, width: visibleWidth(clippedStyled) };
-		});
+	#labeledTextLines(label: string, value: string, width: number): string[] {
+		const contentWidth = Math.max(1, width);
+		const labelWidth = this.#labelWidth(contentWidth);
+		if (labelWidth === 0) {
+			const indent = Math.min(2, Math.max(0, contentWidth - 1));
+			const valueWidth = Math.max(1, contentWidth - indent);
+			const valueLines = wrapTextWithAnsi(value, valueWidth);
+			return [
+				...wrapTextWithAnsi(this.#theme.fg("muted", label), contentWidth),
+				...valueLines.map((line) => `${" ".repeat(indent)}${line}`),
+			];
+		}
 
+		const valueWidth = Math.max(1, contentWidth - labelWidth);
+		const valueLines = wrapTextWithAnsi(value, valueWidth);
+		return (valueLines.length > 0 ? valueLines : [""]).map(
+			(line, index) => `${this.#labelPrefix(index === 0 ? label : "", labelWidth)}${line}`,
+		);
+	}
+
+	#wrapEntries(entries: { text: string; width: number }[], width: number): string[] {
+		const contentWidth = Math.max(1, width);
+		const separator = "  ";
+		const separatorWidth = visibleWidth(separator);
 		const lines: string[] = [];
 		let current = "";
 		let currentWidth = 0;
+
 		for (const entry of entries) {
+			if (entry.width > contentWidth) {
+				if (current) lines.push(current);
+				const wrapped = wrapTextWithAnsi(entry.text, contentWidth);
+				lines.push(...wrapped.slice(0, -1));
+				current = wrapped.at(-1) ?? "";
+				currentWidth = visibleWidth(current);
+				continue;
+			}
 			if (!current) {
 				current = entry.text;
 				currentWidth = entry.width;
@@ -814,12 +876,53 @@ class SkillControlPanel implements Component {
 		return lines.length > 0 ? lines : [""];
 	}
 
-	#search(width: number): string {
+	#labeledEntryLines(label: string, entries: { text: string; width: number }[], width: number): string[] {
+		const contentWidth = Math.max(1, width);
+		const labelWidth = this.#labelWidth(contentWidth);
+		if (labelWidth === 0) {
+			const indent = Math.min(2, Math.max(0, contentWidth - 1));
+			const entryWidth = Math.max(1, contentWidth - indent);
+			return [
+				...wrapTextWithAnsi(this.#theme.fg("muted", label), contentWidth),
+				...this.#wrapEntries(entries, entryWidth).map((line) => `${" ".repeat(indent)}${line}`),
+			];
+		}
+
+		const entryLines = this.#wrapEntries(entries, Math.max(1, contentWidth - labelWidth));
+		return entryLines.map(
+			(line, index) => `${this.#labelPrefix(index === 0 ? label : "", labelWidth)}${line}`,
+		);
+	}
+
+	#providerTabLines(width: number): string[] {
+		const activeIndex = Math.max(0, this.#providerIndex);
+
+		const style = (text: string, index: number, empty: boolean) => {
+			if (index === activeIndex) return this.#theme.fg("accent", this.#theme.bold(`[${text}]`));
+			if (empty) return this.#theme.fg("dim", text);
+			return this.#theme.fg("muted", text);
+		};
+
+		const lines: string[] = [];
+		for (const group of PROVIDER_GROUPS) {
+			const entries = PROVIDER_TABS.flatMap((provider, index) => {
+				if (provider.group !== group.id) return [];
+				const count = this.#providerCount(provider);
+				const empty = count === 0 && provider.id !== "all";
+				const label = `${provider.shortLabel} ${count}`;
+				const text = style(label, index, empty);
+				return [{ text, width: visibleWidth(text) }];
+			});
+			lines.push(...this.#labeledEntryLines(group.label, entries, width));
+		}
+		return lines;
+	}
+
+	#searchValue(width: number): string {
 		const placeholder = width >= 42 ? "type to filter skills" : "filter skills";
-		const value = this.#query
+		return this.#query
 			? `${this.#theme.fg("text", this.#query)}${this.#theme.fg("accent", "_")}`
 			: `${this.#theme.fg("dim", placeholder)}${this.#theme.fg("accent", "_")}`;
-		return `${this.#theme.fg("muted", "Search")}  ${value}`;
 	}
 
 	#sectionSegment(label: string, width: number, focused: boolean): string {
@@ -1043,15 +1146,26 @@ class SkillControlPanel implements Component {
 
 	#renderWide(width: number): string[] {
 		const innerWidth = width - 2;
+		const headerWidth = Math.max(1, innerWidth - 2);
 		const listWidth = Math.min(44, Math.max(32, Math.floor(innerWidth * 0.38)));
 		const previewWidth = innerWidth - listWidth - 1;
 		const lines = this.#topBorder(width, "Skills");
-		lines.push(this.#fullLine(this.#summary(), innerWidth));
-		for (const tabLine of this.#providerTabLines(width)) {
+		for (const summaryLine of this.#labeledEntryLines("Visibility", this.#summaryEntries(), headerWidth)) {
+			lines.push(this.#fullLine(summaryLine, innerWidth));
+		}
+		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		lines.push(this.#fullLine(this.#theme.fg("dim", this.#discoverSummary), innerWidth));
-		lines.push(this.#fullLine(this.#search(width), innerWidth));
+		for (const discoveryLine of this.#labeledTextLines(
+			"Extra paths",
+			this.#theme.fg("dim", this.#discoverSummary),
+			headerWidth,
+		)) {
+			lines.push(this.#fullLine(discoveryLine, innerWidth));
+		}
+		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
+			lines.push(this.#fullLine(searchLine, innerWidth));
+		}
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", listWidth, this.#focus === "list")}${this.#theme.fg(
 				"borderMuted",
@@ -1092,13 +1206,24 @@ class SkillControlPanel implements Component {
 
 	#renderNarrowList(width: number): string[] {
 		const innerWidth = width - 2;
+		const headerWidth = Math.max(1, innerWidth - 2);
 		const lines = this.#topBorder(width, "Skills");
-		lines.push(this.#fullLine(this.#summary(), innerWidth));
-		for (const tabLine of this.#providerTabLines(width)) {
+		for (const summaryLine of this.#labeledEntryLines("Visibility", this.#summaryEntries(), headerWidth)) {
+			lines.push(this.#fullLine(summaryLine, innerWidth));
+		}
+		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		lines.push(this.#fullLine(this.#theme.fg("dim", this.#discoverSummary), innerWidth));
-		lines.push(this.#fullLine(this.#search(width), innerWidth));
+		for (const discoveryLine of this.#labeledTextLines(
+			"Extra paths",
+			this.#theme.fg("dim", this.#discoverSummary),
+			headerWidth,
+		)) {
+			lines.push(this.#fullLine(discoveryLine, innerWidth));
+		}
+		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
+			lines.push(this.#fullLine(searchLine, innerWidth));
+		}
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
 		);
@@ -1179,7 +1304,7 @@ function toListItems(skills: readonly Skill[], cwd: string, agentDir: string): S
 		});
 }
 
-function discoverSummary(discover: DiscoverConfig): string {
+export function discoverSummary(discover: DiscoverConfig): string {
 	const enabled: string[] = [];
 	if (discover.claudeUser) enabled.push("claude");
 	if (discover.codexUser) enabled.push("codex");
@@ -1187,8 +1312,8 @@ function discoverSummary(discover: DiscoverConfig): string {
 	if (discover.claudeProject) enabled.push("claude-project");
 	if (discover.codexProject) enabled.push("codex-project");
 	if (discover.customPaths.length > 0) enabled.push(`custom×${discover.customPaths.length}`);
-	if (enabled.length === 0) return "Extra discovery: off (edit ~/.pi/agent/skill-control.json)";
-	return `Extra discovery: ${enabled.join(", ")} · /reload after edits`;
+	if (enabled.length === 0) return "Off · edit ~/.pi/agent/skill-control.json";
+	return `${enabled.join(", ")} · /reload after edits`;
 }
 
 export default function skillControlExtension(pi: ExtensionAPI) {
