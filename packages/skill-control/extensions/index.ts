@@ -113,6 +113,7 @@ interface ProviderTab {
 	shortLabel: string;
 	group: ProviderGroupId;
 	match: (item: SkillListItem) => boolean;
+	discoveryEnabled?: (discover: DiscoverConfig) => boolean;
 }
 
 type ProviderGroupId = "scope" | "user" | "project" | "other";
@@ -146,6 +147,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "Claude",
 		group: "user",
 		match: (item) => item.sourceLabel === "Claude (user)",
+		discoveryEnabled: (discover) => discover.claudeUser,
 	},
 	{
 		id: "codex-user",
@@ -153,6 +155,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "Codex",
 		group: "user",
 		match: (item) => item.sourceLabel === "Codex (user)",
+		discoveryEnabled: (discover) => discover.codexUser,
 	},
 	{
 		id: "opencode-user",
@@ -160,6 +163,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "OpenCode",
 		group: "user",
 		match: (item) => item.sourceLabel === "OpenCode (user)",
+		discoveryEnabled: (discover) => discover.opencodeUser,
 	},
 	{
 		id: "agents-project",
@@ -181,6 +185,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "Claude",
 		group: "project",
 		match: (item) => item.sourceLabel === "Claude (project)",
+		discoveryEnabled: (discover) => discover.claudeProject,
 	},
 	{
 		id: "codex-project",
@@ -188,6 +193,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "Codex",
 		group: "project",
 		match: (item) => item.sourceLabel === "Codex (project)",
+		discoveryEnabled: (discover) => discover.codexProject,
 	},
 	{
 		id: "opencode-project",
@@ -195,6 +201,7 @@ const PROVIDER_TABS: ProviderTab[] = [
 		shortLabel: "OpenCode",
 		group: "project",
 		match: (item) => item.sourceLabel === "OpenCode (project)",
+		discoveryEnabled: () => false,
 	},
 	{
 		id: "package",
@@ -501,6 +508,7 @@ export class SkillControlPanel implements Component {
 	readonly #keybindings: KeybindingsManager;
 	readonly #items: SkillListItem[];
 	readonly #disabledPaths: Set<string>;
+	readonly #discover: DiscoverConfig;
 	readonly #discoverSummary: string;
 	readonly #onToggle: (path: string) => string | undefined;
 	readonly #onClose: () => void;
@@ -523,6 +531,7 @@ export class SkillControlPanel implements Component {
 		keybindings: KeybindingsManager;
 		items: SkillListItem[];
 		disabledPaths: Set<string>;
+		discover: DiscoverConfig;
 		discoverSummary: string;
 		onToggle: (path: string) => string | undefined;
 		onClose: () => void;
@@ -532,6 +541,7 @@ export class SkillControlPanel implements Component {
 		this.#keybindings = options.keybindings;
 		this.#items = options.items;
 		this.#disabledPaths = options.disabledPaths;
+		this.#discover = options.discover;
 		this.#discoverSummary = options.discoverSummary;
 		this.#onToggle = options.onToggle;
 		this.#onClose = options.onClose;
@@ -617,6 +627,10 @@ export class SkillControlPanel implements Component {
 	#providerCount(provider: ProviderTab): number {
 		if (provider.id === "all") return this.#items.length;
 		return this.#items.filter((item) => provider.match(item)).length;
+	}
+
+	#providerIsOff(provider: ProviderTab, count = this.#providerCount(provider)): boolean {
+		return count === 0 && provider.discoveryEnabled !== undefined && !provider.discoveryEnabled(this.#discover);
 	}
 
 	#filteredItems(): SkillListItem[] {
@@ -909,7 +923,8 @@ export class SkillControlPanel implements Component {
 				if (provider.group !== group.id) return [];
 				const count = this.#providerCount(provider);
 				const empty = count === 0 && provider.id !== "all";
-				const label = `${provider.shortLabel} ${count}`;
+				const value = this.#providerIsOff(provider, count) ? "off" : String(count);
+				const label = `${provider.shortLabel} ${value}`;
 				const text = style(label, index, empty);
 				return [{ text, width: visibleWidth(text) }];
 			});
@@ -989,7 +1004,9 @@ export class SkillControlPanel implements Component {
 		if (items.length === 0) {
 			const provider = this.#activeProvider();
 			const message =
-				this.#items.length === 0
+				this.#providerIsOff(provider)
+					? `${provider.label} auto-discovery is off.`
+					: this.#items.length === 0
 					? "No skills discovered."
 					: this.#query.trim()
 						? `No skills match “${this.#query}”.`
@@ -1157,7 +1174,7 @@ export class SkillControlPanel implements Component {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
 		for (const discoveryLine of this.#labeledTextLines(
-			"Extra paths",
+			"Extra scan",
 			this.#theme.fg("dim", this.#discoverSummary),
 			headerWidth,
 		)) {
@@ -1215,7 +1232,7 @@ export class SkillControlPanel implements Component {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
 		for (const discoveryLine of this.#labeledTextLines(
-			"Extra paths",
+			"Extra scan",
 			this.#theme.fg("dim", this.#discoverSummary),
 			headerWidth,
 		)) {
@@ -1312,8 +1329,8 @@ export function discoverSummary(discover: DiscoverConfig): string {
 	if (discover.claudeProject) enabled.push("claude-project");
 	if (discover.codexProject) enabled.push("codex-project");
 	if (discover.customPaths.length > 0) enabled.push(`custom×${discover.customPaths.length}`);
-	if (enabled.length === 0) return "Off · edit ~/.pi/agent/skill-control.json";
-	return `${enabled.join(", ")} · /reload after edits`;
+	if (enabled.length === 0) return "Package extras off · edit ~/.pi/agent/skill-control.json";
+	return `Package extras: ${enabled.join(", ")} · /reload after edits`;
 }
 
 export default function skillControlExtension(pi: ExtensionAPI) {
@@ -1357,6 +1374,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 						keybindings,
 						items,
 						disabledPaths,
+						discover,
 						discoverSummary: discoverSummary(discover),
 						onToggle: (path) => {
 							const wasDisabled = disabledPaths.has(path);

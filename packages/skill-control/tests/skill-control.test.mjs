@@ -171,7 +171,7 @@ test("discoverSummary preserves enabled sources and the reload hint", () => {
 			codexProject: true,
 			customPaths: ["/skills/one", "/skills/two"],
 		}),
-		"claude, opencode, codex-project, custom×2 · /reload after edits",
+		"Package extras: claude, opencode, codex-project, custom×2 · /reload after edits",
 	);
 });
 
@@ -202,7 +202,19 @@ function makePanelItem(name, sourceKind, sourceLabel, options = {}) {
 	};
 }
 
-function makePanel() {
+function makeDiscover(overrides = {}) {
+	return {
+		claudeUser: false,
+		codexUser: false,
+		opencodeUser: false,
+		claudeProject: false,
+		codexProject: false,
+		customPaths: [],
+		...overrides,
+	};
+}
+
+function makePanel(discover = makeDiscover()) {
 	const items = [
 		makePanelItem("agents-model", "agents", "Agents (user)"),
 		makePanelItem("agents-manual", "agents", "Agents (user)", { disableModelInvocation: true }),
@@ -217,14 +229,8 @@ function makePanel() {
 		keybindings: { matches: () => false },
 		items,
 		disabledPaths: new Set(["/skills/agents-project/SKILL.md"]),
-		discoverSummary: discoverSummary({
-			claudeUser: false,
-			codexUser: false,
-			opencodeUser: false,
-			claudeProject: false,
-			codexProject: false,
-			customPaths: [],
-		}),
+		discover,
+		discoverSummary: discoverSummary(discover),
 		onToggle: () => undefined,
 		onClose() {},
 	});
@@ -237,16 +243,42 @@ test("skill panel groups complete header metadata into labeled rows", () => {
 
 	assert.match(output, /Visibility\s+● 4 model\s+◐ 1 manual\s+○ 1 excluded/);
 	assert.match(output, /Scope\s+\[ALL 6\]/);
-	assert.match(output, /User\s+Agents 2\s+Pi 0\s+Claude 0\s+Codex 0\s+OpenCode 0/);
-	assert.match(output, /Project\s+Agents 1\s+Pi 0\s+Claude 0\s+Codex 0\s+OpenCode 0/);
+	assert.match(output, /User\s+Agents 2\s+Pi 0\s+Claude off\s+Codex off\s+OpenCode off/);
+	assert.match(output, /Project\s+Agents 1\s+Pi 0\s+Claude off\s+Codex off\s+OpenCode off/);
 	assert.match(output, /Other\s+Package 1\s+Project 1\s+Other 1/);
-	assert.match(output, /Extra paths\s+Off · edit ~\/\.pi\/agent\/skill-control\.json/);
+	assert.match(
+		output,
+		/Extra scan\s+Package extras off · edit ~\/\.pi\/agent\/skill-control\.json/,
+	);
 	assert.match(output, /Search\s+type to filter skills_/);
 
 	panel.handleInput("\x1b[C");
 	assert.match(panel.render(120).join("\n"), /User\s+\[Agents 2\]/);
 	for (let index = 0; index < 5; index++) panel.handleInput("\x1b[C");
 	assert.match(panel.render(120).join("\n"), /Project\s+\[Agents 1\]/);
+});
+
+test("skill panel distinguishes enabled empty sources from disabled discovery", () => {
+	const panel = makePanel(
+		makeDiscover({
+			claudeUser: true,
+			opencodeUser: true,
+			codexProject: true,
+		}),
+	);
+	const output = panel.render(120).join("\n");
+
+	assert.match(output, /User\s+Agents 2\s+Pi 0\s+Claude 0\s+Codex off\s+OpenCode 0/);
+	assert.match(output, /Project\s+Agents 1\s+Pi 0\s+Claude off\s+Codex 0\s+OpenCode off/);
+});
+
+test("skill panel explains an external source whose discovery is off", () => {
+	const panel = makePanel();
+	for (let index = 0; index < 3; index++) panel.handleInput("\x1b[C");
+	const output = panel.render(120).join("\n");
+
+	assert.match(output, /User\s+Agents 2\s+Pi 0\s+\[Claude off\]/);
+	assert.match(output, /Claude \(user\) auto-discovery is off\./);
 });
 
 test("skill panel wraps header metadata without exceeding a narrow terminal", () => {
@@ -262,7 +294,7 @@ test("skill panel wraps header metadata without exceeding a narrow terminal", ()
 		"Project",
 		"Other",
 		"Agents 2",
-		"OpenCode 0",
+		"OpenCode off",
 		"Package 1",
 		"~/.pi/agent/skill-control.json",
 		"filter skills_",

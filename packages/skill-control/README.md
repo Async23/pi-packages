@@ -30,7 +30,7 @@ The Skills inspector lists skills discovered for the current session, groups the
 
 - Use Up/Down to select skills or scroll the focused preview.
 - Press Space to include or exclude the selected skill from the next model prompt.
-- Use Left/Right to switch provider tabs. Filters are grouped as `Scope`, `User`, `Project`, and `Other`, and navigation follows that visual order. Every source remains visible (`ALL`, `Agents`, `Pi`, `Claude`, `Codex`, `OpenCode`, `Package`, …), including empty ones with count `0`.
+- Use Left/Right to switch provider tabs. Filters are grouped as `Scope`, `User`, `Project`, and `Other`, and navigation follows that visual order. Every source remains visible (`ALL`, `Agents`, `Pi`, `Claude`, `Codex`, `OpenCode`, `Package`, …). Native or enabled sources with no loaded skills show `0`; external sources whose automatic discovery is disabled show `off`.
 - Badges:
   - **Model** — included in `<available_skills>`
   - **Manual** — `disable-model-invocation: true`; only `/skill:name`
@@ -46,7 +46,7 @@ Changes apply to the next submitted prompt and persist across Pi sessions.
 
 Pi already discovers `~/.pi/agent/skills`, `~/.agents/skills`, project skills, and package skills.
 
-This extension can **append** more directories via `resources_discover`. All extra sources default to **off**.
+This extension can **append** more directories via `resources_discover`. All extra sources default to **off**. The inspector reports this package-owned setting as `Extra scan`; it is separate from Pi's built-in discovery.
 
 Edit:
 
