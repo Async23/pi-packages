@@ -15,12 +15,39 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, normalize, resolve, sep } from "node:path";
+import { basename, join, normalize, sep } from "node:path";
+import {
+	ACCESS_STATE_ORDER,
+	CONFIG_FILE_NAME,
+	accessForState,
+	canonicalPath,
+	changedOverrideCount,
+	cloneOverrides,
+	defaultSkillAccess,
+	overridesEqual,
+	readPolicyConfig,
+	replaceOverrides,
+	resolveSkillAccess,
+	resolveUserAccess,
+	skillAccessState,
+	type PolicyScope,
+	type SkillAccess,
+	type SkillAccessState,
+	type SkillOverrides,
+	writePolicyConfig,
+} from "./policy.ts";
 
-const CONFIG_VERSION = 2;
-const CONFIG_FILE_NAME = "skill-control.json";
+export {
+	accessForState,
+	canonicalPath,
+	defaultSkillAccess,
+	readPolicyConfig,
+	resolveSkillAccess,
+	skillAccessState,
+} from "./policy.ts";
+
 const WIDE_LAYOUT_MIN_WIDTH = 92;
 
 export type SkillSourceKind =
@@ -30,29 +57,15 @@ export type SkillSourceKind =
 	| "codex"
 	| "opencode"
 	| "package"
-	| "project"
+	| "settings"
+	| "path"
+	| "cli"
+	| "extension"
 	| "other";
-
-export type SkillVisibility = "model" | "manual" | "excluded";
 
 type PanelFocus = "list" | "preview";
 type NarrowView = "list" | "preview";
-type FlashKind = "success" | "error";
-
-export interface DiscoverConfig {
-	claudeUser: boolean;
-	codexUser: boolean;
-	opencodeUser: boolean;
-	claudeProject: boolean;
-	codexProject: boolean;
-	customPaths: string[];
-}
-
-interface SkillControlConfig {
-	version: number;
-	disabledPaths: string[];
-	discover: DiscoverConfig;
-}
+type FlashKind = "success" | "warning" | "error";
 
 interface SkillListItem {
 	path: string;
@@ -62,7 +75,8 @@ interface SkillListItem {
 	sourceKind: SkillSourceKind;
 	sourceLabel: string;
 	content: string;
-	disableModelInvocation: boolean;
+	defaultAccess: SkillAccess;
+	sourceScope: "user" | "project" | "temporary";
 }
 
 interface ListGroupRow {
@@ -85,15 +99,6 @@ interface PreviewCache {
 	lines: string[];
 }
 
-const DEFAULT_DISCOVER: DiscoverConfig = {
-	claudeUser: false,
-	codexUser: false,
-	opencodeUser: false,
-	claudeProject: false,
-	codexProject: false,
-	customPaths: [],
-};
-
 const SOURCE_ORDER: SkillSourceKind[] = [
 	"agents",
 	"pi",
@@ -101,7 +106,10 @@ const SOURCE_ORDER: SkillSourceKind[] = [
 	"codex",
 	"opencode",
 	"package",
-	"project",
+	"settings",
+	"path",
+	"cli",
+	"extension",
 	"other",
 ];
 
@@ -111,183 +119,84 @@ interface ProviderTab {
 	id: string;
 	label: string;
 	shortLabel: string;
-	group: ProviderGroupId;
 	match: (item: SkillListItem) => boolean;
-	discoveryEnabled?: (discover: DiscoverConfig) => boolean;
 }
 
-type ProviderGroupId = "scope" | "user" | "project" | "other";
-
-const PROVIDER_GROUPS: { id: ProviderGroupId; label: string }[] = [
-	{ id: "scope", label: "Scope" },
-	{ id: "user", label: "User" },
-	{ id: "project", label: "Project" },
-	{ id: "other", label: "Other" },
-];
-
 const PROVIDER_TABS: ProviderTab[] = [
-	{ id: "all", label: ALL_PROVIDERS_TAB, shortLabel: "ALL", group: "scope", match: () => true },
+	{ id: "all", label: ALL_PROVIDERS_TAB, shortLabel: "ALL", match: () => true },
 	{
-		id: "agents-user",
-		label: "Agents (user)",
+		id: "agents",
+		label: "Agents",
 		shortLabel: "Agents",
-		group: "user",
-		match: (item) => item.sourceLabel === "Agents (user)",
+		match: (item) => item.sourceKind === "agents",
 	},
 	{
-		id: "pi-user",
-		label: "Pi (user)",
+		id: "pi",
+		label: "Pi",
 		shortLabel: "Pi",
-		group: "user",
-		match: (item) => item.sourceLabel === "Pi (user)",
+		match: (item) => item.sourceKind === "pi",
 	},
 	{
-		id: "claude-user",
-		label: "Claude (user)",
+		id: "claude",
+		label: "Claude",
 		shortLabel: "Claude",
-		group: "user",
-		match: (item) => item.sourceLabel === "Claude (user)",
-		discoveryEnabled: (discover) => discover.claudeUser,
+		match: (item) => item.sourceKind === "claude",
 	},
 	{
-		id: "codex-user",
-		label: "Codex (user)",
+		id: "codex",
+		label: "Codex",
 		shortLabel: "Codex",
-		group: "user",
-		match: (item) => item.sourceLabel === "Codex (user)",
-		discoveryEnabled: (discover) => discover.codexUser,
+		match: (item) => item.sourceKind === "codex",
 	},
 	{
-		id: "opencode-user",
-		label: "OpenCode (user)",
+		id: "opencode",
+		label: "OpenCode",
 		shortLabel: "OpenCode",
-		group: "user",
-		match: (item) => item.sourceLabel === "OpenCode (user)",
-		discoveryEnabled: (discover) => discover.opencodeUser,
-	},
-	{
-		id: "agents-project",
-		label: "Agents (project)",
-		shortLabel: "Agents",
-		group: "project",
-		match: (item) => item.sourceLabel === "Agents (project)",
-	},
-	{
-		id: "pi-project",
-		label: "Pi (project)",
-		shortLabel: "Pi",
-		group: "project",
-		match: (item) => item.sourceLabel === "Pi (project)",
-	},
-	{
-		id: "claude-project",
-		label: "Claude (project)",
-		shortLabel: "Claude",
-		group: "project",
-		match: (item) => item.sourceLabel === "Claude (project)",
-		discoveryEnabled: (discover) => discover.claudeProject,
-	},
-	{
-		id: "codex-project",
-		label: "Codex (project)",
-		shortLabel: "Codex",
-		group: "project",
-		match: (item) => item.sourceLabel === "Codex (project)",
-		discoveryEnabled: (discover) => discover.codexProject,
-	},
-	{
-		id: "opencode-project",
-		label: "OpenCode (project)",
-		shortLabel: "OpenCode",
-		group: "project",
-		match: (item) => item.sourceLabel === "OpenCode (project)",
-		discoveryEnabled: () => false,
+		match: (item) => item.sourceKind === "opencode",
 	},
 	{
 		id: "package",
 		label: "Package",
 		shortLabel: "Package",
-		group: "other",
 		match: (item) => item.sourceKind === "package",
 	},
 	{
-		id: "project",
-		label: "Project",
-		shortLabel: "Project",
-		group: "other",
-		match: (item) => item.sourceLabel === "Project",
+		id: "settings",
+		label: "Settings",
+		shortLabel: "Settings",
+		match: (item) => item.sourceKind === "settings",
+	},
+	{
+		id: "path",
+		label: "Path",
+		shortLabel: "Path",
+		match: (item) => item.sourceKind === "path",
+	},
+	{
+		id: "cli",
+		label: "CLI",
+		shortLabel: "CLI",
+		match: (item) => item.sourceKind === "cli",
+	},
+	{
+		id: "extension",
+		label: "Extension",
+		shortLabel: "Extension",
+		match: (item) => item.sourceKind === "extension",
 	},
 	{
 		id: "other",
 		label: "Other",
 		shortLabel: "Other",
-		group: "other",
-		match: (item) => item.sourceLabel === "Other",
+		match: (item) => item.sourceKind === "other",
 	},
 ];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isDiscoverConfig(value: unknown): value is DiscoverConfig {
-	return (
-		isRecord(value) &&
-		typeof value.claudeUser === "boolean" &&
-		typeof value.codexUser === "boolean" &&
-		typeof value.opencodeUser === "boolean" &&
-		typeof value.claudeProject === "boolean" &&
-		typeof value.codexProject === "boolean" &&
-		Array.isArray(value.customPaths) &&
-		value.customPaths.every((path) => typeof path === "string")
-	);
-}
-
-function normalizeDiscover(value: unknown): DiscoverConfig {
-	if (!isRecord(value)) return { ...DEFAULT_DISCOVER };
-	return {
-		claudeUser: value.claudeUser === true,
-		codexUser: value.codexUser === true,
-		opencodeUser: value.opencodeUser === true,
-		claudeProject: value.claudeProject === true,
-		codexProject: value.codexProject === true,
-		customPaths: Array.isArray(value.customPaths)
-			? value.customPaths.filter((path): path is string => typeof path === "string")
-			: [],
-	};
-}
-
-function isSkillControlConfig(value: unknown): value is SkillControlConfig {
-	return (
-		isRecord(value) &&
-		(value.version === 1 || value.version === CONFIG_VERSION) &&
-		Array.isArray(value.disabledPaths) &&
-		value.disabledPaths.every((path) => typeof path === "string") &&
-		(value.version === 1 || value.discover === undefined || isDiscoverConfig(value.discover) || isRecord(value.discover))
-	);
-}
-
-export function canonicalPath(filePath: string, cwd = process.cwd()): string {
-	const absolutePath = normalize(resolve(cwd, filePath));
-	try {
-		return realpathSync.native(absolutePath);
-	} catch {
-		return absolutePath;
-	}
-}
 
 export function displayPath(filePath: string): string {
 	const home = homedir();
 	if (filePath === home) return "~";
 	if (filePath.startsWith(`${home}${sep}`)) return `~${filePath.slice(home.length)}`;
 	return filePath;
-}
-
-function expandUserPath(rawPath: string, cwd: string, home = homedir()): string {
-	const trimmed = rawPath.trim();
-	if (trimmed === "~") return home;
-	if (trimmed.startsWith(`~${sep}`)) return join(home, trimmed.slice(2));
-	return resolve(cwd, trimmed);
 }
 
 function underPath(filePath: string, root: string): boolean {
@@ -320,6 +229,14 @@ export function classifySkillSource(
 		const packageName = source.startsWith("npm:") ? source.slice(4) : source;
 		return { kind: "package", label: packageName ? `Package (${packageName})` : "Package" };
 	}
+	if (source === "cli") return { kind: "cli", label: "CLI (--skill)" };
+	if (source.startsWith("extension:")) {
+		const extensionName = basename(source.slice("extension:".length)).replace(/\.(ts|js)$/, "");
+		return {
+			kind: "extension",
+			label: extensionName ? `Extension (${extensionName})` : "Extension",
+		};
+	}
 
 	if (underPath(path, agentsUser) || underPath(path, agentUser)) {
 		return { kind: "agents", label: "Agents (user)" };
@@ -347,52 +264,43 @@ export function classifySkillSource(
 	}
 	if (containsSegment(path, [".pi", "skills"])) return { kind: "pi", label: "Pi (project)" };
 
-	if (skill.sourceInfo.scope === "project") return { kind: "project", label: "Project" };
+	if (source === "local") {
+		if (skill.sourceInfo.scope === "temporary") {
+			return { kind: "path", label: "Explicit path (temporary)" };
+		}
+		return {
+			kind: "settings",
+			label: skill.sourceInfo.scope === "project" ? "Settings (project)" : "Settings (user)",
+		};
+	}
+	if (skill.sourceInfo.scope === "project") return { kind: "other", label: "Other (project)" };
 	return { kind: "other", label: "Other" };
 }
 
-export function skillVisibility(item: Pick<SkillListItem, "path" | "disableModelInvocation">, disabledPaths: ReadonlySet<string>): SkillVisibility {
-	if (disabledPaths.has(item.path)) return "excluded";
-	if (item.disableModelInvocation) return "manual";
-	return "model";
-}
-
-export function visibilityLabel(visibility: SkillVisibility): string {
-	switch (visibility) {
-		case "excluded":
-			return "Excluded from prompt";
-		case "manual":
-			return "Manual /skill:name only";
+export function accessStateLabel(state: SkillAccessState): string {
+	switch (state) {
+		case "enabled":
+			return "Enabled";
 		case "model":
-			return "Visible to model";
+			return "Model only";
+		case "manual":
+			return "Manual only";
+		case "disabled":
+			return "Disabled";
 	}
 }
 
-export function resolveDiscoverSkillPaths(
-	discover: DiscoverConfig,
-	cwd: string,
-	home = homedir(),
-): string[] {
-	const paths: string[] = [];
-	if (discover.claudeUser) paths.push(join(home, ".claude", "skills"));
-	if (discover.codexUser) paths.push(join(home, ".codex", "skills"));
-	if (discover.opencodeUser) paths.push(join(home, ".config", "opencode", "skills"));
-	if (discover.claudeProject) paths.push(join(cwd, ".claude", "skills"));
-	if (discover.codexProject) paths.push(join(cwd, ".codex", "skills"));
-	for (const custom of discover.customPaths) {
-		const expanded = expandUserPath(custom, cwd, home);
-		if (expanded) paths.push(expanded);
+export function accessStateDescription(state: SkillAccessState): string {
+	switch (state) {
+		case "enabled":
+			return "Model on · /skill on";
+		case "model":
+			return "Model on · /skill off";
+		case "manual":
+			return "Model off · /skill on";
+		case "disabled":
+			return "Model off · /skill off";
 	}
-
-	const seen = new Set<string>();
-	const unique: string[] = [];
-	for (const path of paths) {
-		const key = normalize(path);
-		if (seen.has(key)) continue;
-		seen.add(key);
-		if (existsSync(key)) unique.push(key);
-	}
-	return unique;
 }
 
 function formatBytes(bytes: number): string {
@@ -431,75 +339,53 @@ function readSkillContent(filePath: string): string {
 export function replaceSkillsSection(
 	systemPrompt: string,
 	originalSection: string,
-	enabledSection: string,
+	effectiveSection: string,
 ): string {
-	if (!originalSection || originalSection === enabledSection) return systemPrompt;
-	const sectionIndex = systemPrompt.lastIndexOf(originalSection);
-	if (sectionIndex === -1) return systemPrompt;
-	return `${systemPrompt.slice(0, sectionIndex)}${enabledSection}${systemPrompt.slice(sectionIndex + originalSection.length)}`;
+	if (originalSection === effectiveSection) return systemPrompt;
+	if (originalSection) {
+		const sectionIndex = systemPrompt.lastIndexOf(originalSection);
+		if (sectionIndex === -1) return systemPrompt;
+		return `${systemPrompt.slice(0, sectionIndex)}${effectiveSection}${systemPrompt.slice(sectionIndex + originalSection.length)}`;
+	}
+	if (!effectiveSection) return systemPrompt;
+
+	const cwdMarker = "\nCurrent working directory:";
+	const cwdIndex = systemPrompt.lastIndexOf(cwdMarker);
+	if (cwdIndex === -1) return `${systemPrompt}${effectiveSection}`;
+	return `${systemPrompt.slice(0, cwdIndex)}${effectiveSection}${systemPrompt.slice(cwdIndex)}`;
 }
 
-export function filterAvailableSkills(
+export function applySkillAccessToPrompt(
 	systemPrompt: string,
 	skills: readonly Skill[],
-	disabledPaths: ReadonlySet<string>,
+	globalOverrides: ReadonlyMap<string, SkillAccess>,
+	projectOverrides: ReadonlyMap<string, SkillAccess>,
 	cwd = process.cwd(),
 ): string {
-	const enabledSkills = skills.filter((skill) => !disabledPaths.has(canonicalPath(skill.filePath, cwd)));
-	if (enabledSkills.length === skills.length) return systemPrompt;
-
 	const originalSection = formatSkillsForPrompt([...skills]);
-	const enabledSection = formatSkillsForPrompt([...enabledSkills]);
-	return replaceSkillsSection(systemPrompt, originalSection, enabledSection);
+	const effectiveSkills = skills.flatMap((skill) => {
+		const path = canonicalPath(skill.filePath, cwd);
+		const resolved = resolveSkillAccess(
+			path,
+			defaultSkillAccess(skill),
+			globalOverrides,
+			projectOverrides,
+		);
+		if (!resolved.access.model) return [];
+		return [{ ...skill, disableModelInvocation: false }];
+	});
+	const effectiveSection = formatSkillsForPrompt(effectiveSkills);
+	return replaceSkillsSection(systemPrompt, originalSection, effectiveSection);
 }
 
-function readConfig(configPath: string): {
-	disabledPaths: Set<string>;
-	discover: DiscoverConfig;
-	error?: string;
-} {
-	try {
-		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-		if (!isSkillControlConfig(parsed)) {
-			return {
-				disabledPaths: new Set(),
-				discover: { ...DEFAULT_DISCOVER },
-				error: `Invalid skill control config: ${configPath}`,
-			};
-		}
-		return {
-			disabledPaths: new Set(parsed.disabledPaths.map((path) => canonicalPath(path))),
-			discover: normalizeDiscover(parsed.discover),
-		};
-	} catch (error) {
-		if (isRecord(error) && error.code === "ENOENT") {
-			return { disabledPaths: new Set(), discover: { ...DEFAULT_DISCOVER } };
-		}
-		return {
-			disabledPaths: new Set(),
-			discover: { ...DEFAULT_DISCOVER },
-			error: `Could not read skill control config: ${configPath}`,
-		};
-	}
-}
+export type SkillControlPanelResult =
+	| { action: "apply"; globalOverrides: SkillOverrides; projectOverrides: SkillOverrides }
+	| { action: "close" };
 
-function writeConfig(
-	configPath: string,
-	disabledPaths: ReadonlySet<string>,
-	discover: DiscoverConfig,
-): void {
-	const config: SkillControlConfig = {
-		version: CONFIG_VERSION,
-		disabledPaths: [...disabledPaths].sort(),
-		discover: {
-			...discover,
-			customPaths: [...discover.customPaths],
-		},
-	};
-	const temporaryPath = `${configPath}.${process.pid}.tmp`;
-	mkdirSync(dirname(configPath), { recursive: true });
-	writeFileSync(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-	renameSync(temporaryPath, configPath);
+interface StateDialog {
+	path: string;
+	scope: PolicyScope;
+	selectedIndex: number;
 }
 
 export class SkillControlPanel implements Component {
@@ -507,11 +393,13 @@ export class SkillControlPanel implements Component {
 	readonly #theme: Theme;
 	readonly #keybindings: KeybindingsManager;
 	readonly #items: SkillListItem[];
-	readonly #disabledPaths: Set<string>;
-	readonly #discover: DiscoverConfig;
-	readonly #discoverSummary: string;
-	readonly #onToggle: (path: string) => string | undefined;
-	readonly #onClose: () => void;
+	readonly #providers: ProviderTab[];
+	readonly #initialGlobalOverrides: SkillOverrides;
+	readonly #initialProjectOverrides: SkillOverrides;
+	readonly #globalOverrides: SkillOverrides;
+	readonly #projectOverrides: SkillOverrides;
+	readonly #projectTrusted: boolean;
+	readonly #onDone: (result: SkillControlPanelResult) => void;
 
 	#query = "";
 	#selectedIndex = 0;
@@ -524,27 +412,32 @@ export class SkillControlPanel implements Component {
 	#lastPreviewViewportHeight = 1;
 	#previewCache: PreviewCache | undefined;
 	#flash: { kind: FlashKind; text: string } | undefined;
+	#stateDialog: StateDialog | undefined;
+	#confirmDiscard = false;
 
 	constructor(options: {
 		tui: TUI;
 		theme: Theme;
 		keybindings: KeybindingsManager;
 		items: SkillListItem[];
-		disabledPaths: Set<string>;
-		discover: DiscoverConfig;
-		discoverSummary: string;
-		onToggle: (path: string) => string | undefined;
-		onClose: () => void;
+		globalOverrides: ReadonlyMap<string, SkillAccess>;
+		projectOverrides: ReadonlyMap<string, SkillAccess>;
+		projectTrusted?: boolean;
+		onDone: (result: SkillControlPanelResult) => void;
 	}) {
 		this.#tui = options.tui;
 		this.#theme = options.theme;
 		this.#keybindings = options.keybindings;
 		this.#items = options.items;
-		this.#disabledPaths = options.disabledPaths;
-		this.#discover = options.discover;
-		this.#discoverSummary = options.discoverSummary;
-		this.#onToggle = options.onToggle;
-		this.#onClose = options.onClose;
+		this.#providers = PROVIDER_TABS.filter(
+			(provider) => provider.id === "all" || options.items.some((item) => provider.match(item)),
+		);
+		this.#initialGlobalOverrides = cloneOverrides(options.globalOverrides);
+		this.#initialProjectOverrides = cloneOverrides(options.projectOverrides);
+		this.#globalOverrides = cloneOverrides(options.globalOverrides);
+		this.#projectOverrides = cloneOverrides(options.projectOverrides);
+		this.#projectTrusted = options.projectTrusted ?? true;
+		this.#onDone = options.onDone;
 	}
 
 	invalidate(): void {
@@ -552,6 +445,14 @@ export class SkillControlPanel implements Component {
 	}
 
 	render(width: number): string[] {
+		if (this.#confirmDiscard) {
+			this.#lastWidth = width;
+			return this.#renderDiscardDialog(width);
+		}
+		if (this.#stateDialog) {
+			this.#lastWidth = width;
+			return this.#renderStateDialog(width);
+		}
 		const wasWide = this.#lastWidth >= WIDE_LAYOUT_MIN_WIDTH;
 		const isWide = width >= WIDE_LAYOUT_MIN_WIDTH;
 		if (this.#lastWidth > 0 && wasWide !== isWide) {
@@ -564,26 +465,42 @@ export class SkillControlPanel implements Component {
 	}
 
 	handleInput(data: string): void {
+		if (this.#confirmDiscard) {
+			this.#handleDiscardInput(data);
+			this.#requestRender();
+			return;
+		}
+		if (this.#stateDialog) {
+			this.#handleStateDialogInput(data);
+			this.#requestRender();
+			return;
+		}
+		if (matchesKey(data, Key.ctrl("s"))) {
+			this.#apply();
+			return;
+		}
 		const wide = this.#lastWidth >= WIDE_LAYOUT_MIN_WIDTH;
 
 		if (this.#keybindings.matches(data, "tui.select.cancel")) {
 			if (!wide && this.#narrowView === "preview") {
 				this.#narrowView = "list";
 				this.#focus = "list";
+			} else if (this.#isDirty()) {
+				this.#confirmDiscard = true;
 			} else {
-				this.#onClose();
+				this.#onDone({ action: "close" });
 				return;
 			}
 			this.#requestRender();
 			return;
 		}
 
-		if (matchesKey(data, Key.left) || data === "h") {
+		if (matchesKey(data, Key.left)) {
 			this.#moveProvider(-1);
 			this.#requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.right) || data === "l") {
+		if (matchesKey(data, Key.right)) {
 			this.#moveProvider(1);
 			this.#requestRender();
 			return;
@@ -606,12 +523,220 @@ export class SkillControlPanel implements Component {
 		this.#tui.requestRender();
 	}
 
+	#isDirty(): boolean {
+		return (
+			!overridesEqual(this.#initialGlobalOverrides, this.#globalOverrides) ||
+			!overridesEqual(this.#initialProjectOverrides, this.#projectOverrides)
+		);
+	}
+
+	#pendingCount(): number {
+		return (
+			changedOverrideCount(this.#initialGlobalOverrides, this.#globalOverrides) +
+			changedOverrideCount(this.#initialProjectOverrides, this.#projectOverrides)
+		);
+	}
+
+	#apply(): void {
+		if (!this.#isDirty()) {
+			this.#onDone({ action: "close" });
+			return;
+		}
+		this.#onDone({
+			action: "apply",
+			globalOverrides: cloneOverrides(this.#globalOverrides),
+			projectOverrides: cloneOverrides(this.#projectOverrides),
+		});
+	}
+
+	#resolutionFor(item: SkillListItem) {
+		return resolveSkillAccess(
+			item.path,
+			item.defaultAccess,
+			this.#globalOverrides,
+			this.#projectOverrides,
+		);
+	}
+
+	#stateFor(item: SkillListItem): SkillAccessState {
+		return skillAccessState(this.#resolutionFor(item).access);
+	}
+
+	#scopeOverrides(scope: PolicyScope): SkillOverrides {
+		return scope === "project" ? this.#projectOverrides : this.#globalOverrides;
+	}
+
+	#defaultScope(item: SkillListItem): PolicyScope {
+		if (this.#projectTrusted && item.sourceScope !== "user") return "project";
+		return "global";
+	}
+
+	#selectionFor(item: SkillListItem, scope: PolicyScope): number {
+		const explicit = this.#scopeOverrides(scope).get(item.path);
+		const inherited =
+			scope === "project"
+				? resolveSkillAccess(item.path, item.defaultAccess, this.#globalOverrides, new Map()).access
+				: item.defaultAccess;
+		const state = skillAccessState(explicit ?? inherited);
+		return Math.max(0, ACCESS_STATE_ORDER.indexOf(state));
+	}
+
+	#inheritedStateFor(item: SkillListItem, scope: PolicyScope): SkillAccessState {
+		if (scope === "global") return skillAccessState(item.defaultAccess);
+		return skillAccessState(
+			resolveSkillAccess(item.path, item.defaultAccess, this.#globalOverrides, new Map()).access,
+		);
+	}
+
+	#openStateDialog(): void {
+		const item = this.#currentItem();
+		if (!item) return;
+		const scope = this.#defaultScope(item);
+		this.#stateDialog = {
+			path: item.path,
+			scope,
+			selectedIndex: this.#selectionFor(item, scope),
+		};
+		this.#flash = undefined;
+	}
+
+	#handleStateDialogInput(data: string): void {
+		const dialog = this.#stateDialog;
+		if (!dialog) return;
+		const item = this.#items.find((candidate) => candidate.path === dialog.path);
+		if (!item) {
+			this.#stateDialog = undefined;
+			return;
+		}
+
+		if (this.#keybindings.matches(data, "tui.select.cancel")) {
+			this.#stateDialog = undefined;
+			return;
+		}
+		if (matchesKey(data, Key.tab)) {
+			if (!this.#projectTrusted) {
+				this.#flash = { kind: "warning", text: "Project scope requires a trusted project" };
+				return;
+			}
+			dialog.scope = dialog.scope === "global" ? "project" : "global";
+			dialog.selectedIndex = this.#selectionFor(item, dialog.scope);
+			return;
+		}
+		if (this.#keybindings.matches(data, "tui.select.up")) {
+			dialog.selectedIndex = (dialog.selectedIndex + ACCESS_STATE_ORDER.length) % (ACCESS_STATE_ORDER.length + 1);
+			return;
+		}
+		if (this.#keybindings.matches(data, "tui.select.down")) {
+			dialog.selectedIndex = (dialog.selectedIndex + 1) % (ACCESS_STATE_ORDER.length + 1);
+			return;
+		}
+		if (!this.#keybindings.matches(data, "tui.select.confirm")) return;
+
+		const overrides = this.#scopeOverrides(dialog.scope);
+		if (dialog.selectedIndex === ACCESS_STATE_ORDER.length) {
+			overrides.delete(item.path);
+		} else {
+			const state = ACCESS_STATE_ORDER[dialog.selectedIndex];
+			if (state) overrides.set(item.path, accessForState(state));
+		}
+		this.#stateDialog = undefined;
+		const pending = this.#pendingCount();
+		this.#flash = pending > 0 ? { kind: "warning", text: `Pending ${pending}` } : { kind: "success", text: "No pending changes" };
+	}
+
+	#handleDiscardInput(data: string): void {
+		if (data.toLowerCase() === "y") {
+			this.#onDone({ action: "close" });
+			return;
+		}
+		if (
+			data.toLowerCase() === "n" ||
+			this.#keybindings.matches(data, "tui.select.cancel") ||
+			this.#keybindings.matches(data, "tui.select.confirm")
+		) {
+			this.#confirmDiscard = false;
+		}
+	}
+
+	#renderStateDialog(width: number): string[] {
+		if (width < 4) return [truncateToWidth("Set access", width, "")];
+		const innerWidth = width - 2;
+		const dialog = this.#stateDialog;
+		const item = dialog ? this.#items.find((candidate) => candidate.path === dialog.path) : undefined;
+		if (!dialog || !item) return [truncateToWidth("Set access", width, "")];
+
+		const scopeText = [
+			dialog.scope === "global" ? this.#theme.fg("accent", this.#theme.bold("[Global]")) : this.#theme.fg("muted", "Global"),
+			dialog.scope === "project" ? this.#theme.fg("accent", this.#theme.bold("[Project]")) : this.#theme.fg("muted", "Project"),
+		].join("  ");
+		const explicit = this.#scopeOverrides(dialog.scope).has(item.path);
+		const inheritedState = this.#inheritedStateFor(item, dialog.scope);
+		const lines = this.#topBorder(width, "Set Skill access");
+		lines.push(this.#fullLine(this.#theme.fg("accent", this.#theme.bold(item.name)), innerWidth));
+		lines.push(this.#fullLine(`${this.#theme.fg("muted", "Apply to")}  ${scopeText}`, innerWidth));
+		lines.push(
+			this.#fullLine(
+				this.#theme.fg(
+					"dim",
+					explicit
+						? `${dialog.scope} override exists`
+						: `Currently inherited · ${accessStateLabel(inheritedState)}`,
+				),
+				innerWidth,
+			),
+		);
+		lines.push(this.#border("├", "─", "┤", innerWidth));
+
+		for (let index = 0; index < ACCESS_STATE_ORDER.length; index++) {
+			const state = ACCESS_STATE_ORDER[index];
+			if (!state) continue;
+			const selected = dialog.selectedIndex === index;
+			const icon = this.#stateIcon(state);
+			const label = this.#theme.fg(selected ? "accent" : "text", accessStateLabel(state));
+			const description = this.#theme.fg("dim", accessStateDescription(state));
+			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, description, innerWidth - 2), innerWidth, selected));
+		}
+		const resetSelected = dialog.selectedIndex === ACCESS_STATE_ORDER.length;
+		lines.push(
+			this.#fullLine(
+				this.#joined(
+					`${this.#theme.fg("muted", "↩")}  ${this.#theme.fg(resetSelected ? "accent" : "text", "Reset to inherited")}`,
+					this.#theme.fg("dim", dialog.scope === "project" ? "Use Global or Skill default" : "Use Skill default"),
+					innerWidth - 2,
+				),
+				innerWidth,
+				resetSelected,
+			),
+		);
+		lines.push(this.#border("├", "─", "┤", innerWidth));
+		const help = this.#projectTrusted ? "↑↓ select   Tab scope   Enter choose   Esc cancel" : "↑↓ select   Enter choose   Esc cancel";
+		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
+		lines.push(this.#border("╰", "─", "╯", innerWidth));
+		return lines;
+	}
+
+	#renderDiscardDialog(width: number): string[] {
+		if (width < 4) return [truncateToWidth("Discard changes?", width, "")];
+		const innerWidth = width - 2;
+		const pending = this.#pendingCount();
+		const lines = this.#topBorder(width, "Unsaved Skill changes");
+		lines.push(
+			this.#fullLine(
+				this.#theme.fg("warning", `Discard ${pending} pending ${pending === 1 ? "change" : "changes"}?`),
+				innerWidth,
+			),
+		);
+		lines.push(this.#fullLine(this.#theme.fg("dim", "Y discard   N/Enter/Esc keep editing"), innerWidth));
+		lines.push(this.#border("╰", "─", "╯", innerWidth));
+		return lines;
+	}
+
 	#activeProvider(): ProviderTab {
-		return PROVIDER_TABS[this.#providerIndex] ?? PROVIDER_TABS[0];
+		return this.#providers[this.#providerIndex] ?? this.#providers[0] ?? PROVIDER_TABS[0];
 	}
 
 	#moveProvider(delta: number): void {
-		this.#providerIndex = (this.#providerIndex + delta + PROVIDER_TABS.length) % PROVIDER_TABS.length;
+		this.#providerIndex = (this.#providerIndex + delta + this.#providers.length) % this.#providers.length;
 		this.#selectedIndex = 0;
 		this.#previewOffset = 0;
 		this.#previewCache = undefined;
@@ -627,10 +752,6 @@ export class SkillControlPanel implements Component {
 	#providerCount(provider: ProviderTab): number {
 		if (provider.id === "all") return this.#items.length;
 		return this.#items.filter((item) => provider.match(item)).length;
-	}
-
-	#providerIsOff(provider: ProviderTab, count = this.#providerCount(provider)): boolean {
-		return count === 0 && provider.discoveryEnabled !== undefined && !provider.discoveryEnabled(this.#discover);
 	}
 
 	#filteredItems(): SkillListItem[] {
@@ -667,10 +788,7 @@ export class SkillControlPanel implements Component {
 	}
 
 	#toggleCurrentItem(): void {
-		const item = this.#currentItem();
-		if (!item) return;
-		const error = this.#onToggle(item.path);
-		this.#flash = error ? { kind: "error", text: error } : { kind: "success", text: "Saved" };
+		this.#openStateDialog();
 	}
 
 	#handleListInput(data: string, wide: boolean): void {
@@ -802,24 +920,40 @@ export class SkillControlPanel implements Component {
 
 	#summaryEntries(): { text: string; width: number }[] {
 		const scoped = this.#providerItems();
+		let enabledCount = 0;
 		let modelCount = 0;
 		let manualCount = 0;
-		let excludedCount = 0;
+		let disabledCount = 0;
 		for (const item of scoped) {
-			const visibility = skillVisibility(item, this.#disabledPaths);
-			if (visibility === "model") modelCount += 1;
-			else if (visibility === "manual") manualCount += 1;
-			else excludedCount += 1;
+			const state = this.#stateFor(item);
+			if (state === "enabled") enabledCount += 1;
+			else if (state === "model") modelCount += 1;
+			else if (state === "manual") manualCount += 1;
+			else disabledCount += 1;
 		}
 		const entries = [
-			`${this.#theme.fg("accent", "●")} ${this.#theme.fg("text", `${modelCount} model`)}`,
-			`${this.#theme.fg("warning", "◐")} ${this.#theme.fg("muted", `${manualCount} manual`)}`,
-			`${this.#theme.fg(excludedCount > 0 ? "warning" : "dim", "○")} ${this.#theme.fg(
-				excludedCount > 0 ? "warning" : "dim",
-				`${excludedCount} excluded`,
+			`${this.#theme.fg("accent", "●")} ${this.#theme.fg("text", `${enabledCount} enabled`)}`,
+			`${this.#theme.fg("accent", "◆")} ${this.#theme.fg("muted", `${modelCount} model only`)}`,
+			`${this.#theme.fg("warning", "◐")} ${this.#theme.fg("muted", `${manualCount} manual only`)}`,
+			`${this.#theme.fg(disabledCount > 0 ? "warning" : "dim", "○")} ${this.#theme.fg(
+				disabledCount > 0 ? "warning" : "dim",
+				`${disabledCount} disabled`,
 			)}`,
 		];
 		return entries.map((text) => ({ text, width: visibleWidth(text) }));
+	}
+
+	#stateIcon(state: SkillAccessState): string {
+		switch (state) {
+			case "enabled":
+				return this.#theme.fg("accent", "●");
+			case "model":
+				return this.#theme.fg("accent", "◆");
+			case "manual":
+				return this.#theme.fg("warning", "◐");
+			case "disabled":
+				return this.#theme.fg("dim", "○");
+		}
 	}
 
 	#labelWidth(width: number): number {
@@ -917,20 +1051,12 @@ export class SkillControlPanel implements Component {
 			return this.#theme.fg("muted", text);
 		};
 
-		const lines: string[] = [];
-		for (const group of PROVIDER_GROUPS) {
-			const entries = PROVIDER_TABS.flatMap((provider, index) => {
-				if (provider.group !== group.id) return [];
-				const count = this.#providerCount(provider);
-				const empty = count === 0 && provider.id !== "all";
-				const value = this.#providerIsOff(provider, count) ? "off" : String(count);
-				const label = `${provider.shortLabel} ${value}`;
-				const text = style(label, index, empty);
-				return [{ text, width: visibleWidth(text) }];
-			});
-			lines.push(...this.#labeledEntryLines(group.label, entries, width));
-		}
-		return lines;
+		const entries = this.#providers.map((provider, index) => {
+			const count = this.#providerCount(provider);
+			const text = style(`${provider.shortLabel} ${count}`, index, false);
+			return { text, width: visibleWidth(text) };
+		});
+		return this.#labeledEntryLines("Sources", entries, width);
 	}
 
 	#searchValue(width: number): string {
@@ -1004,15 +1130,11 @@ export class SkillControlPanel implements Component {
 		if (items.length === 0) {
 			const provider = this.#activeProvider();
 			const message =
-				this.#providerIsOff(provider)
-					? `${provider.label} auto-discovery is off.`
-					: this.#items.length === 0
+				this.#items.length === 0
 					? "No skills discovered."
 					: this.#query.trim()
 						? `No skills match “${this.#query}”.`
-						: provider.id === "all"
-							? "No skills discovered."
-							: `No skills in ${provider.label}.`;
+						: `No skills in ${provider.label}.`;
 			return [
 				this.#paneContent(this.#theme.fg("muted", message), width),
 				...Array.from({ length: height - 1 }, () => " ".repeat(width)),
@@ -1026,24 +1148,14 @@ export class SkillControlPanel implements Component {
 			}
 
 			const selected = row.itemIndex === this.#selectedIndex;
-			const visibility = skillVisibility(row.item, this.#disabledPaths);
-			const icon =
-				visibility === "excluded"
-					? this.#theme.fg("dim", "○")
-					: visibility === "manual"
-						? this.#theme.fg("warning", "◐")
-						: this.#theme.fg("accent", "●");
+			const state = this.#stateFor(row.item);
+			const icon = this.#stateIcon(state);
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
-				: visibility === "excluded"
+				: state === "disabled"
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
-			const badge =
-				visibility === "excluded"
-					? this.#theme.fg("dim", "Excluded")
-					: visibility === "manual"
-						? this.#theme.fg("warning", "Manual")
-						: this.#theme.fg("dim", "Model");
+			const badge = this.#theme.fg(state === "disabled" ? "dim" : state === "manual" ? "warning" : "muted", accessStateLabel(state));
 			const content = this.#joined(`${icon}  ${label}`, badge, Math.max(0, width - 2));
 			return this.#paneContent(content, width, selected && focused);
 		});
@@ -1085,9 +1197,10 @@ export class SkillControlPanel implements Component {
 		const metadata = `${lineCount(item.content)} lines · ${formatBytes(bytes)} · ~${formatCount(estimateTokens(item.content))} tokens`;
 		const name = truncateToWidth(item.name, Math.max(1, width - 2), "…");
 		const description = truncateToWidth(item.description, Math.max(1, width - 2), "…");
-		const visibility = skillVisibility(item, this.#disabledPaths);
+		const resolution = this.#resolutionFor(item);
+		const state = skillAccessState(resolution.access);
 		const sourceLine = truncateToWidth(
-			`${item.sourceLabel} · ${visibilityLabel(visibility)}`,
+			`${item.sourceLabel} · ${accessStateLabel(state)} · ${resolution.source}`,
 			Math.max(1, width - 2),
 			"…",
 		);
@@ -1156,7 +1269,8 @@ export class SkillControlPanel implements Component {
 	#helpWithFlash(help: string, width: number): string {
 		const styledHelp = this.#theme.fg("dim", help);
 		if (!this.#flash) return styledHelp;
-		const styledFlash = this.#theme.fg(this.#flash.kind === "error" ? "error" : "success", this.#flash.text);
+		const flashColor = this.#flash.kind === "error" ? "error" : this.#flash.kind === "warning" ? "warning" : "success";
+		const styledFlash = this.#theme.fg(flashColor, this.#flash.text);
 		if (this.#flash.kind === "error") return styledFlash;
 		return this.#joined(styledHelp, styledFlash, width);
 	}
@@ -1172,13 +1286,6 @@ export class SkillControlPanel implements Component {
 		}
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
-		}
-		for (const discoveryLine of this.#labeledTextLines(
-			"Extra scan",
-			this.#theme.fg("dim", this.#discoverSummary),
-			headerWidth,
-		)) {
-			lines.push(this.#fullLine(discoveryLine, innerWidth));
 		}
 		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
 			lines.push(this.#fullLine(searchLine, innerWidth));
@@ -1211,7 +1318,7 @@ export class SkillControlPanel implements Component {
 				"┴",
 			)}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`,
 		);
-		const help = "←/→ provider   ↑↓ select/scroll   Tab pane   Space toggle   Esc close";
+		const help = "←/→ source   ↑↓ select/scroll   Tab pane   Space access   Ctrl+S apply   Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1231,13 +1338,6 @@ export class SkillControlPanel implements Component {
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		for (const discoveryLine of this.#labeledTextLines(
-			"Extra scan",
-			this.#theme.fg("dim", this.#discoverSummary),
-			headerWidth,
-		)) {
-			lines.push(this.#fullLine(discoveryLine, innerWidth));
-		}
 		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
 			lines.push(this.#fullLine(searchLine, innerWidth));
 		}
@@ -1254,13 +1354,14 @@ export class SkillControlPanel implements Component {
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const selected = this.#currentItem();
 		if (selected) {
-			const visibility = skillVisibility(selected, this.#disabledPaths);
+			const resolution = this.#resolutionFor(selected);
+			const state = skillAccessState(resolution.access);
 			lines.push(this.#fullLine(this.#theme.fg("text", selected.label), innerWidth));
 			lines.push(
 				this.#fullLine(
 					this.#theme.fg(
-						visibility === "excluded" ? "warning" : "muted",
-						`${selected.sourceLabel} · ${visibilityLabel(visibility)}`,
+						state === "disabled" ? "warning" : "muted",
+						`${selected.sourceLabel} · ${accessStateLabel(state)} · ${resolution.source}`,
 					),
 					innerWidth,
 				),
@@ -1271,7 +1372,9 @@ export class SkillControlPanel implements Component {
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help =
-			width >= 55 ? "←/→ provider   ↑↓ select   Enter preview   Space toggle" : "←/→ provider   ↑↓ select   Space";
+			width >= 66
+				? "←/→ source   ↑↓ select   Enter preview   Space access   Ctrl+S apply"
+				: "←/→ source   ↑↓ select   Space access";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1287,7 +1390,10 @@ export class SkillControlPanel implements Component {
 		const previewRows = this.#renderPreviewRows(innerWidth, contentHeight);
 		for (const row of previewRows) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
-		const help = width >= 55 ? "↑↓/PgUp/PgDn scroll   Space toggle   Enter/Esc back" : "↑↓ scroll   Space toggle   Esc back";
+		const help =
+			width >= 62
+				? "↑↓/PgUp/PgDn scroll   Space access   Ctrl+S apply   Enter/Esc back"
+				: "↑↓ scroll   Space access   Esc back";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1309,7 +1415,8 @@ function toListItems(skills: readonly Skill[], cwd: string, agentDir: string): S
 				sourceKind: source.kind,
 				sourceLabel: source.label,
 				content: readSkillContent(skill.filePath),
-				disableModelInvocation: skill.disableModelInvocation,
+				defaultAccess: defaultSkillAccess(skill),
+				sourceScope: skill.sourceInfo.scope,
 			};
 		})
 		.sort((left, right) => {
@@ -1321,34 +1428,88 @@ function toListItems(skills: readonly Skill[], cwd: string, agentDir: string): S
 		});
 }
 
-export function discoverSummary(discover: DiscoverConfig): string {
-	const enabled: string[] = [];
-	if (discover.claudeUser) enabled.push("claude");
-	if (discover.codexUser) enabled.push("codex");
-	if (discover.opencodeUser) enabled.push("opencode");
-	if (discover.claudeProject) enabled.push("claude-project");
-	if (discover.codexProject) enabled.push("codex-project");
-	if (discover.customPaths.length > 0) enabled.push(`custom×${discover.customPaths.length}`);
-	if (enabled.length === 0) return "Package extras off · edit ~/.pi/agent/skill-control.json";
-	return `Package extras: ${enabled.join(", ")} · /reload after edits`;
+export function parseSkillCommand(text: string): string | undefined {
+	const match = text.match(/^\/skill:([^\s]+)(?:\s|$)/);
+	return match?.[1];
+}
+
+function fuzzyCommandMatch(value: string, query: string): boolean {
+	const haystack = value.toLowerCase();
+	const needle = query.toLowerCase();
+	let queryIndex = 0;
+	for (const character of haystack) {
+		if (character === needle[queryIndex]) queryIndex += 1;
+		if (queryIndex === needle.length) return true;
+	}
+	return needle.length === 0;
 }
 
 export default function skillControlExtension(pi: ExtensionAPI) {
-	const configPath = join(getAgentDir(), CONFIG_FILE_NAME);
-	const loadedConfig = readConfig(configPath);
-	const disabledPaths = loadedConfig.disabledPaths;
-	const discover = loadedConfig.discover;
-	let configError = loadedConfig.error;
+	const globalConfigPath = join(getAgentDir(), CONFIG_FILE_NAME);
+	const globalOverrides: SkillOverrides = new Map();
+	const projectOverrides: SkillOverrides = new Map();
+	let currentCwd = process.cwd();
+	let projectConfigPath = join(currentCwd, ".pi", CONFIG_FILE_NAME);
+	let configError: string | undefined;
+	let autocompleteInstalled = false;
 	let promptMismatchWarningShown = false;
 
-	pi.on("resources_discover", (event) => {
-		const skillPaths = resolveDiscoverSkillPaths(discover, event.cwd);
-		if (skillPaths.length === 0) return;
-		return { skillPaths };
+	const loadPolicies = (cwd: string, projectTrusted: boolean) => {
+		const global = readPolicyConfig(globalConfigPath);
+		currentCwd = cwd;
+		projectConfigPath = join(cwd, ".pi", CONFIG_FILE_NAME);
+		const project: ReturnType<typeof readPolicyConfig> = projectTrusted
+			? readPolicyConfig(projectConfigPath)
+			: { overrides: new Map(), migrated: false };
+		replaceOverrides(globalOverrides, global.overrides);
+		replaceOverrides(projectOverrides, project.overrides);
+		configError = global.error ?? project.error;
+	};
+
+	loadPolicies(process.cwd(), false);
+
+	pi.on("session_start", (_event, ctx) => {
+		loadPolicies(ctx.cwd, ctx.isProjectTrusted());
+		if (configError) ctx.ui.notify(configError, "error");
+		if (autocompleteInstalled || ctx.mode !== "tui") return;
+		autocompleteInstalled = true;
+		ctx.ui.addAutocompleteProvider((current) => ({
+			triggerCharacters: current.triggerCharacters,
+			async getSuggestions(lines, cursorLine, cursorCol, options) {
+				const delegated = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+				const beforeCursor = (lines[cursorLine] ?? "").slice(0, cursorCol);
+				if (!beforeCursor.startsWith("/") || beforeCursor.includes(" ")) return delegated;
+
+				const query = beforeCursor.slice(1);
+				const skillCommands = pi.getCommands().filter((command) => command.source === "skill");
+				const allowedCommands = skillCommands.filter((command) => {
+					const path = canonicalPath(command.sourceInfo.path, currentCwd);
+					return resolveUserAccess(path, globalOverrides, projectOverrides);
+				});
+				const blockedNames = new Set(
+					skillCommands
+						.filter((command) => !allowedCommands.includes(command))
+						.map((command) => command.name),
+				);
+				const items = (delegated?.items ?? []).filter((item) => !blockedNames.has(item.value));
+				const existing = new Set(items.map((item) => item.value));
+				for (const command of allowedCommands) {
+					if (existing.has(command.name) || !fuzzyCommandMatch(command.name, query)) continue;
+					items.push({ value: command.name, label: command.name, description: command.description });
+				}
+				return items.length > 0 ? { prefix: delegated?.prefix ?? beforeCursor, items } : null;
+			},
+			applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+				return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+			},
+			shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+				return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+			},
+		}));
 	});
 
 	pi.registerCommand("skills", {
-		description: "Enable or disable loaded skills",
+		description: "Control model and /skill access for discovered skills",
 		handler: async (args, ctx) => {
 			if (args.trim() !== "") {
 				ctx.ui.notify("Usage: /skills", "error");
@@ -1366,33 +1527,17 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 			const skills = ctx.getSystemPromptOptions().skills ?? [];
 			const items = toListItems(skills, ctx.cwd, getAgentDir());
 
-			await ctx.ui.custom(
+			const result = await ctx.ui.custom<SkillControlPanelResult>(
 				(tui, theme, keybindings, done) =>
 					new SkillControlPanel({
 						tui,
 						theme,
 						keybindings,
 						items,
-						disabledPaths,
-						discover,
-						discoverSummary: discoverSummary(discover),
-						onToggle: (path) => {
-							const wasDisabled = disabledPaths.has(path);
-							if (wasDisabled) disabledPaths.delete(path);
-							else disabledPaths.add(path);
-
-							try {
-								writeConfig(configPath, disabledPaths, discover);
-								return undefined;
-							} catch {
-								if (wasDisabled) disabledPaths.add(path);
-								else disabledPaths.delete(path);
-								configError = `Could not write skill control config: ${configPath}`;
-								ctx.ui.notify(configError, "error");
-								return "Could not save Skill settings";
-							}
-						},
-						onClose: () => done(undefined),
+						globalOverrides,
+						projectOverrides,
+						projectTrusted: ctx.isProjectTrusted(),
+						onDone: done,
 					}),
 				{
 					overlay: true,
@@ -1405,28 +1550,69 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 					},
 				},
 			);
+			if (result.action !== "apply") return;
+
+			const globalChanged = !overridesEqual(globalOverrides, result.globalOverrides);
+			const projectChanged = !overridesEqual(projectOverrides, result.projectOverrides);
+			const changeCount =
+				changedOverrideCount(globalOverrides, result.globalOverrides) +
+				changedOverrideCount(projectOverrides, result.projectOverrides);
+			try {
+				if (globalChanged) writePolicyConfig(globalConfigPath, result.globalOverrides);
+				if (projectChanged) writePolicyConfig(projectConfigPath, result.projectOverrides);
+				replaceOverrides(globalOverrides, result.globalOverrides);
+				replaceOverrides(projectOverrides, result.projectOverrides);
+				configError = undefined;
+				ctx.ui.notify(`Applied ${changeCount} Skill ${changeCount === 1 ? "change" : "changes"}`, "info");
+			} catch {
+				configError = "Could not write Skill control configuration";
+				ctx.ui.notify(configError, "error");
+			}
 		},
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (disabledPaths.size === 0) return;
+		if (globalOverrides.size === 0 && projectOverrides.size === 0) return;
 
 		const skills = event.systemPromptOptions.skills ?? [];
-		const filteredPrompt = filterAvailableSkills(event.systemPrompt, skills, disabledPaths, ctx.cwd);
-		const hasDisabledLoadedSkill = skills.some((skill) => disabledPaths.has(canonicalPath(skill.filePath, ctx.cwd)));
+		const filteredPrompt = applySkillAccessToPrompt(
+			event.systemPrompt,
+			skills,
+			globalOverrides,
+			projectOverrides,
+			ctx.cwd,
+		);
 
 		if (filteredPrompt === event.systemPrompt) {
-			if (hasDisabledLoadedSkill && !promptMismatchWarningShown) {
-				const originalSection = formatSkillsForPrompt([...skills]);
-				if (originalSection.length > 0) {
-					promptMismatchWarningShown = true;
-					ctx.ui.notify("Skill control could not locate Pi's available skills section.", "warning");
-				}
+			const modelPolicyDiffers = skills.some((skill) => {
+				const path = canonicalPath(skill.filePath, ctx.cwd);
+				const access = resolveSkillAccess(
+					path,
+					defaultSkillAccess(skill),
+					globalOverrides,
+					projectOverrides,
+				).access;
+				return access.model !== !skill.disableModelInvocation;
+			});
+			if (modelPolicyDiffers && !promptMismatchWarningShown) {
+				promptMismatchWarningShown = true;
+				ctx.ui.notify("Skill control could not update Pi's available Skills section.", "warning");
 			}
 			return;
 		}
 
 		promptMismatchWarningShown = false;
 		return { systemPrompt: filteredPrompt };
+	});
+
+	pi.on("input", (event, ctx) => {
+		const skillName = parseSkillCommand(event.text);
+		if (!skillName) return;
+		const command = pi.getCommands().find((candidate) => candidate.source === "skill" && candidate.name === `skill:${skillName}`);
+		if (!command) return;
+		const path = canonicalPath(command.sourceInfo.path, ctx.cwd);
+		if (resolveUserAccess(path, globalOverrides, projectOverrides)) return;
+		ctx.ui.notify(`Skill '${skillName}' is disabled for /skill. Use /skills to change access.`, "warning");
+		return { action: "handled" };
 	});
 }

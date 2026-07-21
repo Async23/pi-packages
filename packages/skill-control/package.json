@@ -1,7 +1,7 @@
 {
   "name": "@async23/pi-skill-control",
-  "version": "0.2.0",
-  "description": "Interactively enable or disable loaded Pi skills, with optional extra discovery paths",
+  "version": "0.3.0",
+  "description": "Control model and direct user access for every Skill discovered by Pi",
   "type": "module",
   "license": "MIT",
   "keywords": [

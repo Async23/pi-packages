@@ -1,8 +1,8 @@
 # @async23/pi-skill-control
 
-A Pi extension for interactively enabling or disabling loaded skills so they are excluded from the system prompt's `<available_skills>` section.
+A Pi extension for controlling model visibility and direct `/skill:name` access for every Skill Pi has discovered.
 
-This package **toggles already-discovered skills**. It does not unload skills from Pi's discovery pipeline, and `/skill:name` remains available for disabled skills.
+Pi remains responsible for discovery: default directories, `settings.json`, packages, `--skill`, and other extensions determine the candidate Skill set. This package applies an access policy to those candidates; it does not add scan paths or edit Pi's resource settings.
 
 ## Install
 
@@ -10,7 +10,7 @@ This package **toggles already-discovered skills**. It does not unload skills fr
 pi install npm:@async23/pi-skill-control
 ```
 
-Restart Pi after installation, or run `/reload` in an existing session.
+Restart Pi after installation, or run `/reload` in an existing session to load the extension code.
 
 For local development from this repository:
 
@@ -26,69 +26,86 @@ Run:
 /skills
 ```
 
-The Skills inspector lists skills discovered for the current session, groups them by source (Agents / Pi / Claude / Codex / Package / …), and previews each `SKILL.md`.
+The inspector lists the Skills Pi discovered for the current session, groups them by their actual source, and previews each `SKILL.md`.
 
-- Use Up/Down to select skills or scroll the focused preview.
-- Press Space to include or exclude the selected skill from the next model prompt.
-- Use Left/Right to switch provider tabs. Filters are grouped as `Scope`, `User`, `Project`, and `Other`, and navigation follows that visual order. Every source remains visible (`ALL`, `Agents`, `Pi`, `Claude`, `Codex`, `OpenCode`, `Package`, …). Native or enabled sources with no loaded skills show `0`; external sources whose automatic discovery is disabled show `off`.
-- Badges:
-  - **Model** — included in `<available_skills>`
-  - **Manual** — `disable-model-invocation: true`; only `/skill:name`
-  - **Excluded** — turned off by this extension
-- Press Enter to open the preview on narrow terminals.
-- Press Tab to switch between the skill list and preview on wide terminals.
-- Type while the skill list is focused to search by name, description, source, or path.
-- Press Escape to return from a narrow preview or close the inspector.
+- Up/Down selects a Skill or scrolls the focused preview.
+- Left/Right switches between source filters that actually contain discovered Skills.
+- Tab switches between the Skill list and preview on wide terminals.
+- Typing filters by name, description, source, or path; Backspace edits the filter.
+- Space opens the access selector for the selected Skill.
+- Ctrl+S writes and applies all pending changes; no Pi reload is needed.
+- Escape closes the inspector. Pending changes require explicit discard confirmation.
 
-Changes apply to the next submitted prompt and persist across Pi sessions.
+### Access states
 
-## Extra discovery (optional)
+Model access and direct user access are independent:
 
-Pi already discovers `~/.pi/agent/skills`, `~/.agents/skills`, project skills, and package skills.
+| State | Model sees the Skill | `/skill:name` is shown and accepted |
+| --- | --- | --- |
+| **Enabled** | Yes | Yes |
+| **Model only** | Yes | No |
+| **Manual only** | No | Yes |
+| **Disabled** | No | No |
 
-This extension can **append** more directories via `resources_discover`. All extra sources default to **off**. The inspector reports this package-owned setting as `Extra scan`; it is separate from Pi's built-in discovery.
+`disable-model-invocation: true` maps to **Manual only** by default. An explicit policy can override that default in either direction.
 
-Edit:
+Press Space, choose any of the four states, then press Enter. While the selector is open, Tab switches the write scope:
+
+- **Global** — applies in every project.
+- **Project** — applies only in the current trusted project.
+- **Reset to inherited** — removes the override at that scope.
+
+Effective policy precedence is:
+
+```text
+Project override > Global override > Skill frontmatter default
+```
+
+## Configuration
+
+Global policy:
 
 ```text
 ~/.pi/agent/skill-control.json
 ```
 
-Example:
+Project policy:
+
+```text
+<cwd>/.pi/skill-control.json
+```
+
+Version 3 stores explicit model/user permissions by canonical `SKILL.md` path:
 
 ```json
 {
-  "version": 2,
-  "disabledPaths": [],
-  "discover": {
-    "claudeUser": true,
-    "codexUser": true,
-    "opencodeUser": false,
-    "claudeProject": false,
-    "codexProject": false,
-    "customPaths": []
+  "version": 3,
+  "overrides": {
+    "/absolute/path/to/example/SKILL.md": {
+      "model": false,
+      "user": true
+    }
   }
 }
 ```
 
-| Key | Path |
-| --- | --- |
-| `claudeUser` | `~/.claude/skills` |
-| `codexUser` | `~/.codex/skills` |
-| `opencodeUser` | `~/.config/opencode/skills` |
-| `claudeProject` | `<cwd>/.claude/skills` |
-| `codexProject` | `<cwd>/.codex/skills` |
-| `customPaths` | Extra absolute/`~/`/cwd-relative paths |
+Version 1 and 2 `disabledPaths` entries are read as **Disabled** and are written in version 3 format on the next Apply. The old `discover` setting is no longer used; configure additional Skill paths through Pi's native `skills` setting instead:
 
-After changing `discover`, run `/reload` (or restart Pi).
+```json
+{
+  "skills": ["~/.claude/skills", "~/.codex/skills"]
+}
+```
 
-Disabled skills are stored under `disabledPaths` as canonical absolute `SKILL.md` paths.
+## Enforcement
 
-## Limitations
+For Skills that Pi can remove through its own settings, Pi's resource configuration remains the discovery authority. For temporary `--skill` entries and Skills injected by other extensions, stock Pi does not expose a resource-removal hook. This package therefore enforces policy at the observable entry points:
 
-- This extension removes disabled skills from the system prompt before each agent run. It does **not** change Pi's startup skill list or unregister `/skill:name`.
-- Extra discovery only **adds** paths. It cannot stop Pi from scanning its built-in locations.
-- If another extension rewrites Pi's `<available_skills>` section first, filtering may fail and Pi shows a warning.
+- Model-off Skills are removed from `<available_skills>`.
+- User-off Skills are removed from slash-command autocomplete.
+- A manually typed user-off `/skill:name` invocation is intercepted before expansion.
+
+The underlying Skill file is never modified or deleted.
 
 ## License
 
