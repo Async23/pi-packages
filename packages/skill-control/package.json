@@ -1,0 +1,39 @@
+{
+  "name": "@async23/pi-skill-control",
+  "version": "0.2.0",
+  "description": "Interactively enable or disable loaded Pi skills, with optional extra discovery paths",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "skills",
+    "skill-control"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/skill-control"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/skill-control#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}
