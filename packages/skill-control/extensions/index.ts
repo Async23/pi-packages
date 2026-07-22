@@ -782,9 +782,9 @@ export class SkillControlPanel implements Component {
 		const normalizedQuery = this.#query.trim().toLowerCase();
 		if (!normalizedQuery) return providerItems;
 		return providerItems.filter((item) =>
-			`${item.name} ${item.label} ${item.description} ${item.sourceLabel} ${item.path}`
-				.toLowerCase()
-				.includes(normalizedQuery),
+			[item.name, item.label, item.description, item.sourceLabel, item.path].some((value) =>
+				fuzzyMatch(value, normalizedQuery),
+			),
 		);
 	}
 
@@ -1470,7 +1470,7 @@ export function parseSkillCommand(text: string): string | undefined {
 	return match?.[1];
 }
 
-function fuzzyCommandMatch(value: string, query: string): boolean {
+function fuzzyMatch(value: string, query: string): boolean {
 	const haystack = value.toLowerCase();
 	const needle = query.toLowerCase();
 	let queryIndex = 0;
@@ -1531,7 +1531,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 				const items = (delegated?.items ?? []).filter((item) => !blockedNames.has(item.value));
 				const existing = new Set(items.map((item) => item.value));
 				for (const command of allowedCommands) {
-					if (existing.has(command.name) || !fuzzyCommandMatch(command.name, query)) continue;
+					if (existing.has(command.name) || !fuzzyMatch(command.name, query)) continue;
 					items.push({ value: command.name, label: command.name, description: command.description });
 				}
 				return items.length > 0 ? { prefix: delegated?.prefix ?? beforeCursor, items } : null;

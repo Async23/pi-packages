@@ -335,3 +335,27 @@ test("panel wraps the compact header and dialogs within narrow terminals", () =>
 	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
 	assert.match(output, /Who can use this Skill\?/);
 });
+
+test("search fuzzy-matches non-contiguous name segments", () => {
+	const panel = new SkillControlPanel({
+		tui: { terminal: { rows: 80 }, requestRender() {} },
+		theme: plainTheme,
+		keybindings: { matches: () => false },
+		items: [
+			makePanelItem("my-pptx-html-local", "agents", "Agents (user)"),
+			makePanelItem("my-pptx-local", "agents", "Agents (user)"),
+		],
+		globalOverrides: new Map(),
+		projectOverrides: new Map(),
+		overrides: new Map(),
+		onDone: () => undefined,
+	});
+	panel.render(120);
+	for (const character of "my-html") panel.handleInput(character);
+	const output = panel.render(120).join("\n");
+
+	assert.match(output, /Search\s+my-html_/);
+	assert.match(output, /my-pptx-html-local/);
+	assert.doesNotMatch(output, /my-pptx-local/);
+	assert.doesNotMatch(output, /No skills match/);
+});

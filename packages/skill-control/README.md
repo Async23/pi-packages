@@ -31,7 +31,7 @@ The inspector lists the Skills Pi discovered for the current session, groups the
 - Up/Down selects a Skill or scrolls the focused preview.
 - Left/Right switches between source filters that actually contain discovered Skills.
 - Tab switches between the Skill list and preview on wide terminals.
-- Typing filters by name, description, source, or path; Backspace edits the filter.
+- Typing fuzzy-matches by name, description, source, or path; Backspace edits the filter.
 - Space opens the access selector for the selected Skill.
 - Ctrl+S writes and applies all pending changes; no Pi reload is needed.
 - Escape closes the inspector. Pending changes require explicit discard confirmation.
