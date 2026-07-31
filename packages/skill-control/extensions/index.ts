@@ -8,6 +8,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
+	type Focusable,
+	Input,
 	Key,
 	matchesKey,
 	truncateToWidth,
@@ -95,6 +97,12 @@ interface PreviewCache {
 	path: string;
 	width: number;
 	lines: string[];
+}
+
+interface AccessUndoEntry {
+	path: string;
+	name: string;
+	previous: SkillAccess | undefined;
 }
 
 const SOURCE_ORDER: SkillSourceKind[] = [
@@ -336,7 +344,7 @@ export type SkillControlPanelResult =
 	| { action: "apply"; overrides: SkillOverrides }
 	| { action: "close" };
 
-export class SkillControlPanel implements Component {
+export class SkillControlPanel implements Component, Focusable {
 	readonly #tui: TUI;
 	readonly #theme: Theme;
 	readonly #keybindings: KeybindingsManager;
@@ -348,6 +356,7 @@ export class SkillControlPanel implements Component {
 
 	#query = "";
 	#filterEditing = false;
+	#filterInput = new Input();
 	#queryBeforeEdit = "";
 	#selectedIndexBeforeFilter = 0;
 	#selectedIndex = 0;
@@ -362,6 +371,17 @@ export class SkillControlPanel implements Component {
 	#flash: { kind: FlashKind; text: string } | undefined;
 	#accessGuideOpen = false;
 	#confirmDiscard = false;
+	#accessUndoStack: AccessUndoEntry[] = [];
+	#focused = false;
+
+	get focused(): boolean {
+		return this.#focused;
+	}
+
+	set focused(value: boolean) {
+		this.#focused = value;
+		this.#filterInput.focused = value && this.#filterEditing;
+	}
 
 	constructor(options: {
 		tui: TUI;
@@ -385,6 +405,7 @@ export class SkillControlPanel implements Component {
 
 	invalidate(): void {
 		this.#previewCache = undefined;
+		this.#filterInput.invalidate();
 	}
 
 	render(width: number): string[] {
@@ -456,20 +477,30 @@ export class SkillControlPanel implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.left) || data === "h") {
+		if (data === "[") {
 			this.#moveProvider(-1);
 			this.#requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.right) || data === "l") {
+		if (data === "]") {
 			this.#moveProvider(1);
 			this.#requestRender();
 			return;
 		}
 
+		if (matchesKey(data, Key.left) || data === "h") {
+			this.#moveFocus(-1, wide);
+			this.#requestRender();
+			return;
+		}
+		if (matchesKey(data, Key.right) || data === "l") {
+			this.#moveFocus(1, wide);
+			this.#requestRender();
+			return;
+		}
+
 		if (wide && matchesKey(data, Key.tab)) {
-			this.#focus = this.#focus === "list" ? "preview" : "list";
-			this.#flash = undefined;
+			this.#moveFocus(1, wide);
 			this.#requestRender();
 			return;
 		}
@@ -488,6 +519,9 @@ export class SkillControlPanel implements Component {
 		this.#filterEditing = true;
 		this.#queryBeforeEdit = this.#query;
 		this.#selectedIndexBeforeFilter = this.#selectedIndex;
+		this.#filterInput = new Input();
+		if (this.#query) this.#filterInput.handleInput(this.#query);
+		this.#filterInput.focused = this.#focused;
 		this.#focus = "list";
 		this.#narrowView = "list";
 		this.#flash = undefined;
@@ -495,6 +529,7 @@ export class SkillControlPanel implements Component {
 
 	#commitFilterEditing(): void {
 		this.#filterEditing = false;
+		this.#filterInput.focused = false;
 		this.#queryBeforeEdit = this.#query;
 		this.#selectedIndexBeforeFilter = this.#selectedIndex;
 		this.#flash = undefined;
@@ -503,6 +538,7 @@ export class SkillControlPanel implements Component {
 	#cancelFilterEditing(): void {
 		this.#query = this.#queryBeforeEdit;
 		this.#filterEditing = false;
+		this.#filterInput.focused = false;
 		this.#resetFilterNavigation(this.#selectedIndexBeforeFilter);
 	}
 
@@ -512,7 +548,9 @@ export class SkillControlPanel implements Component {
 		this.#resetFilterNavigation(0);
 	}
 
-	#setFilterQuery(query: string): void {
+	#syncFilterInput(): void {
+		const query = this.#filterInput.getValue();
+		if (query === this.#query) return;
 		this.#query = query;
 		this.#resetFilterNavigation(0);
 	}
@@ -526,7 +564,6 @@ export class SkillControlPanel implements Component {
 	}
 
 	#handleFilterInput(data: string, wide: boolean): boolean {
-		const items = this.#filteredItems();
 		if (this.#keybindings.matches(data, "tui.select.cancel")) {
 			this.#cancelFilterEditing();
 		} else if (this.#keybindings.matches(data, "tui.select.confirm")) {
@@ -539,19 +576,12 @@ export class SkillControlPanel implements Component {
 			this.#setSelection(this.#selectedIndex - 8);
 		} else if (this.#keybindings.matches(data, "tui.select.pageDown")) {
 			this.#setSelection(this.#selectedIndex + 8);
-		} else if (matchesKey(data, Key.home)) {
-			this.#setSelection(0);
-		} else if (matchesKey(data, Key.end)) {
-			this.#setSelection(items.length - 1);
 		} else if (wide && matchesKey(data, Key.tab)) {
 			this.#commitFilterEditing();
 			this.#focus = "preview";
-		} else if (matchesKey(data, Key.backspace)) {
-			this.#setFilterQuery(this.#query.slice(0, -1));
-		} else if (this.#isPrintable(data)) {
-			this.#setFilterQuery(this.#query + data);
 		} else {
-			return false;
+			this.#filterInput.handleInput(data);
+			this.#syncFilterInput();
 		}
 		return true;
 	}
@@ -583,26 +613,100 @@ export class SkillControlPanel implements Component {
 		return skillAccessState(this.#resolutionFor(item).access);
 	}
 
-	#cycleCurrentItem(): void {
+	#sameOptionalAccess(left: SkillAccess | undefined, right: SkillAccess | undefined): boolean {
+		if (!left || !right) return left === right;
+		return left.model === right.model && left.user === right.user;
+	}
+
+	#cloneOptionalAccess(access: SkillAccess | undefined): SkillAccess | undefined {
+		return access ? { model: access.model, user: access.user } : undefined;
+	}
+
+	#isOverridePending(item: SkillListItem): boolean {
+		return !this.#sameOptionalAccess(this.#initialOverrides.get(item.path), this.#overrides.get(item.path));
+	}
+
+	#rowAccessStatus(item: SkillListItem): "Default" | "Override" | "Pending" {
+		if (this.#isOverridePending(item)) return "Pending";
+		return this.#overrides.has(item.path) ? "Override" : "Default";
+	}
+
+	#accessSourceStatus(item: SkillListItem): string {
+		if (this.#isOverridePending(item)) {
+			return this.#overrides.has(item.path) ? "Pending override" : "Pending reset";
+		}
+		return this.#overrides.has(item.path) ? "Saved override" : "Using default";
+	}
+
+	#pendingText(): string {
+		const pending = this.#pendingCount();
+		return pending > 0 ? `Pending ${pending}` : "No pending changes";
+	}
+
+	#changeCurrentItemState(nextState: SkillAccessState): void {
 		const item = this.#currentItem();
 		if (!item) return;
 		const currentState = this.#stateFor(item);
-		const currentIndex = ACCESS_STATE_ORDER.indexOf(currentState);
-		const nextState = ACCESS_STATE_ORDER[(currentIndex + 1) % ACCESS_STATE_ORDER.length] ?? "both";
 		const nextAccess = accessForState(nextState);
 		const usesDefault =
 			nextAccess.model === item.defaultAccess.model && nextAccess.user === item.defaultAccess.user;
-		if (usesDefault) {
-			this.#overrides.delete(item.path);
-		} else {
-			this.#overrides.set(item.path, nextAccess);
+		const nextOverride = usesDefault ? undefined : nextAccess;
+		const currentOverride = this.#overrides.get(item.path);
+		if (this.#sameOptionalAccess(currentOverride, nextOverride)) {
+			this.#flash = {
+				kind: "success",
+				text: `Already ${accessStateLabel(nextState)}${usesDefault ? " (default)" : ""} · ${this.#pendingText()}`,
+			};
+			return;
 		}
+
+		this.#accessUndoStack.push({
+			path: item.path,
+			name: item.name,
+			previous: this.#cloneOptionalAccess(currentOverride),
+		});
+		if (nextOverride) this.#overrides.set(item.path, nextOverride);
+		else this.#overrides.delete(item.path);
+
 		const pending = this.#pendingCount();
 		const target = `${accessStateLabel(nextState)}${usesDefault ? " (default)" : ""}`;
-		const pendingText = pending > 0 ? `Pending ${pending}` : "No pending changes";
 		this.#flash = {
 			kind: pending > 0 ? "warning" : "success",
-			text: `${accessStateLabel(currentState)} → ${target} · ${pendingText}`,
+			text: `${accessStateLabel(currentState)} → ${target} · ${this.#pendingText()}`,
+		};
+	}
+
+	#cycleCurrentItem(delta = 1): void {
+		const item = this.#currentItem();
+		if (!item) return;
+		const currentIndex = ACCESS_STATE_ORDER.indexOf(this.#stateFor(item));
+		const nextIndex = (currentIndex + delta + ACCESS_STATE_ORDER.length) % ACCESS_STATE_ORDER.length;
+		this.#changeCurrentItemState(ACCESS_STATE_ORDER[nextIndex] ?? "both");
+	}
+
+	#resetCurrentItem(): void {
+		const item = this.#currentItem();
+		if (!item) return;
+		this.#changeCurrentItemState(skillAccessState(item.defaultAccess));
+	}
+
+	#undoLatestAccessChange(): void {
+		const entry = this.#accessUndoStack.pop();
+		if (!entry) {
+			this.#flash = { kind: "warning", text: "No access changes to undo" };
+			return;
+		}
+		const item = this.#items.find((candidate) => candidate.path === entry.path);
+		if (!item) return;
+		const beforeState = this.#stateFor(item);
+		if (entry.previous) this.#overrides.set(entry.path, this.#cloneOptionalAccess(entry.previous)!);
+		else this.#overrides.delete(entry.path);
+		const afterState = this.#stateFor(item);
+		const target = `${accessStateLabel(afterState)}${this.#overrides.has(entry.path) ? "" : " (default)"}`;
+		const pending = this.#pendingCount();
+		this.#flash = {
+			kind: pending > 0 ? "warning" : "success",
+			text: `Undo ${entry.name}: ${accessStateLabel(beforeState)} → ${target} · ${this.#pendingText()}`,
 		};
 	}
 
@@ -661,7 +765,12 @@ export class SkillControlPanel implements Component {
 			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, permissions, innerWidth - 2), innerWidth));
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
-		const help = width >= 66 ? "Space cycles these states in the Skills list   Esc close" : "Esc close";
+		const help =
+			width >= 82
+				? "Space/Shift+Space cycle   r default   u undo   Esc close"
+				: width >= 54
+					? "Space cycle   r default   u undo   Esc close"
+					: "Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -685,6 +794,16 @@ export class SkillControlPanel implements Component {
 
 	#activeProvider(): ProviderTab {
 		return this.#providers[this.#providerIndex] ?? this.#providers[0] ?? PROVIDER_TABS[0];
+	}
+
+	#moveFocus(delta: number, wide: boolean): void {
+		const panes: PanelFocus[] = ["list", "preview"];
+		const current = wide ? this.#focus : this.#narrowView;
+		const currentIndex = panes.indexOf(current);
+		const next = panes[(currentIndex + delta + panes.length) % panes.length] ?? "list";
+		this.#focus = next;
+		this.#narrowView = next;
+		this.#flash = undefined;
 	}
 
 	#moveProvider(delta: number): void {
@@ -756,8 +875,14 @@ export class SkillControlPanel implements Component {
 			this.#setSelection(0);
 		} else if (matchesKey(data, Key.end)) {
 			this.#setSelection(items.length - 1);
+		} else if (matchesKey(data, Key.shift("space"))) {
+			this.#cycleCurrentItem(-1);
 		} else if (data === " ") {
 			this.#cycleCurrentItem();
+		} else if (data === "r") {
+			this.#resetCurrentItem();
+		} else if (data === "u") {
+			this.#undoLatestAccessChange();
 		} else if (!wide && this.#keybindings.matches(data, "tui.select.confirm")) {
 			if (this.#currentItem()) {
 				this.#focus = "preview";
@@ -791,14 +916,6 @@ export class SkillControlPanel implements Component {
 		const maximum = Math.max(0, this.#lastPreviewLineCount - this.#lastPreviewViewportHeight);
 		this.#previewOffset = Math.max(0, Math.min(this.#previewOffset + delta, maximum));
 		this.#flash = undefined;
-	}
-
-	#isPrintable(data: string): boolean {
-		if (!data) return false;
-		return [...data].every((character) => {
-			const codePoint = character.codePointAt(0) ?? 0;
-			return codePoint >= 32 && codePoint !== 127;
-		});
 	}
 
 	#pad(text: string, width: number): string {
@@ -908,6 +1025,14 @@ export class SkillControlPanel implements Component {
 		return width >= 30 ? Math.min(14, width - 1) : 0;
 	}
 
+	#labeledValueWidth(width: number): number {
+		const contentWidth = Math.max(1, width);
+		const labelWidth = this.#labelWidth(contentWidth);
+		if (labelWidth > 0) return Math.max(1, contentWidth - labelWidth);
+		const indent = Math.min(2, Math.max(0, contentWidth - 1));
+		return Math.max(1, contentWidth - indent);
+	}
+
 	#labelPrefix(label: string, width: number): string {
 		if (width <= 0) return "";
 		const gap = Math.min(2, width);
@@ -1008,13 +1133,14 @@ export class SkillControlPanel implements Component {
 	}
 
 	#searchValue(width: number): string {
-		const slash = this.#theme.fg("accent", "/");
 		if (this.#filterEditing) {
-			return `${slash}${this.#theme.fg("text", this.#query)}${this.#theme.fg("accent", "_")}`;
+			const inputWidth = this.#labeledValueWidth(width);
+			const rendered = this.#filterInput.render(inputWidth + 2)[0] ?? "> ";
+			return (rendered.startsWith("> ") ? rendered.slice(2) : rendered).trimEnd();
 		}
-		if (this.#query) return `${slash}${this.#theme.fg("text", this.#query)}`;
+		if (this.#query) return this.#theme.fg("text", this.#query);
 		const placeholder = width >= 42 ? " to filter skills" : " filter";
-		return `${slash}${this.#theme.fg("dim", placeholder)}`;
+		return `${this.#theme.fg("accent", "/")}${this.#theme.fg("dim", placeholder)}`;
 	}
 
 	#sectionSegment(label: string, width: number, focused: boolean): string {
@@ -1100,18 +1226,17 @@ export class SkillControlPanel implements Component {
 
 			const selected = row.itemIndex === this.#selectedIndex;
 			const state = this.#stateFor(row.item);
-			const customized = this.#resolutionFor(row.item).source === "override";
+			const status = this.#rowAccessStatus(row.item);
 			const icon = this.#stateIcon(state);
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
 				: state === "neither"
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
+			const badge = this.#theme.fg(status === "Pending" ? "warning" : status === "Override" ? "muted" : "dim", status);
 			const left = `${icon}  ${label}`;
 			const contentWidth = Math.max(0, width - 2);
-			const content = customized
-				? this.#joined(left, this.#theme.fg("muted", "Non-default"), contentWidth)
-				: truncateToWidth(left, contentWidth, "…");
+			const content = this.#joined(left, badge, contentWidth);
 			return this.#paneContent(content, width, selected && focused);
 		});
 		while (rendered.length < height) rendered.push(" ".repeat(width));
@@ -1195,6 +1320,21 @@ export class SkillControlPanel implements Component {
 		return this.#paneContent(this.#theme.fg("muted", item.label), width);
 	}
 
+	#accessSummaryText(item: SkillListItem): string {
+		const current = accessStateLabel(this.#stateFor(item));
+		const defaultState = accessStateLabel(skillAccessState(item.defaultAccess));
+		const source = this.#accessSourceStatus(item);
+		const sourceColor = this.#isOverridePending(item) ? "warning" : this.#overrides.has(item.path) ? "muted" : "dim";
+		return `${this.#theme.fg("muted", `Current ${current} · Default ${defaultState} · `)}${this.#theme.fg(
+			sourceColor,
+			source,
+		)}`;
+	}
+
+	#previewAccessSummary(item: SkillListItem, width: number): string {
+		return this.#paneContent(this.#accessSummaryText(item), width);
+	}
+
 	#renderPreviewRows(width: number, height: number): string[] {
 		const item = this.#currentItem();
 		if (!item) {
@@ -1206,7 +1346,8 @@ export class SkillControlPanel implements Component {
 		}
 
 		const path = this.#previewPath(item, width);
-		const previewHeight = Math.max(1, height - 1);
+		const accessSummary = this.#previewAccessSummary(item, width);
+		const previewHeight = Math.max(1, height - 2);
 		const contentWidth = Math.max(1, width - 2);
 		const previewLines = this.#previewLines(item, contentWidth);
 		this.#lastPreviewLineCount = previewLines.length;
@@ -1223,7 +1364,7 @@ export class SkillControlPanel implements Component {
 						.slice(this.#previewOffset, this.#previewOffset + previewHeight)
 						.map((line) => this.#paneContent(line, width));
 
-		const rows = [path, ...content];
+		const rows = [path, accessSummary, ...content];
 		while (rows.length < height) rows.push(" ".repeat(width));
 		return rows.slice(0, height);
 	}
@@ -1281,10 +1422,14 @@ export class SkillControlPanel implements Component {
 			)}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`,
 		);
 		const help = this.#filterEditing
-			? "Type filter   ↑↓ select   Enter keep   Esc cancel"
+			? "Type filter   ←/→ cursor   ↑/↓ select   Ctrl+U clear   Ctrl+W word   Enter keep   Esc cancel"
 			: this.#focus === "list"
-				? "j/k select   / filter   Space cycle   ? guide   Tab Preview   h/l source   Ctrl+S apply   Esc close"
-				: "j/k/PgUp/PgDn scroll   / filter   ? guide   Tab Skills   h/l source   Ctrl+S apply   Esc close";
+				? width >= 112
+					? "j/k select   h/l focus   [/] source   / filter   Space/⇧Space   r default   u undo   ? guide   Ctrl+S apply"
+					: "j/k select   h/l focus   [/] source   / filter   Space/⇧Space   r default   u undo"
+				: width >= 100
+					? "j/k/PgUp/PgDn scroll   h/l focus   [/] source   / filter   ? guide   Ctrl+S apply   Esc close"
+					: "j/k/Pg scroll   h/l focus   [/] source   / filter   Ctrl+S apply   Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1310,7 +1455,7 @@ export class SkillControlPanel implements Component {
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
 		);
-		const chromeAfterContent = 5; // selected path + separators + help + bottom
+		const chromeAfterContent = 6; // selected path + access summary + separators + help + bottom
 		const contentHeight = Math.max(
 			3,
 			Math.min(16, this.#preferredOverlayHeight() - lines.length - chromeAfterContent),
@@ -1321,19 +1466,23 @@ export class SkillControlPanel implements Component {
 		const selected = this.#currentItem();
 		if (selected) {
 			lines.push(this.#fullLine(this.#theme.fg("text", selected.label), innerWidth));
+			lines.push(this.#fullLine(this.#accessSummaryText(selected), innerWidth));
 		} else {
 			lines.push(this.#fullLine(this.#theme.fg("dim", "Press / to change the filter."), innerWidth));
+			lines.push(this.#fullLine("", innerWidth));
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help = this.#filterEditing
-			? width >= 56
-				? "Type filter  ↑↓ select  Enter keep  Esc cancel"
-				: "Type filter  Enter keep  Esc cancel"
-			: width >= 74
-				? "h/l source  j/k select  Enter preview  / filter  Space cycle  ? guide"
+			? width >= 76
+				? "Type filter  ←/→ cursor  ↑/↓ select  Ctrl+U clear  Ctrl+W word  Enter keep  Esc cancel"
 				: width >= 56
-					? "h/l source  j/k select  / filter  Space cycle"
-					: "j/k select  / filter  Space cycle";
+					? "Type filter  Ctrl+U clear  Ctrl+W word  Enter keep  Esc cancel"
+					: "Type filter  Enter keep  Esc cancel"
+			: width >= 74
+				? "j/k  h/l focus  [/] source  / filter  Space/⇧Space  r default  u undo"
+				: width >= 56
+					? "j/k  h/l focus  [/] source  / filter  Space  r/u"
+					: "j/k  h/l focus  [/] source  / filter";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1351,8 +1500,10 @@ export class SkillControlPanel implements Component {
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help =
 			width >= 76
-				? "j/k/PgUp/PgDn scroll  / filter  ? guide  Ctrl+S apply  Enter/Esc back"
-				: "j/k scroll  / filter  Esc back";
+				? "j/k/Pg scroll  h/l focus  [/] source  / filter  Ctrl+S apply  Esc back"
+				: width >= 48
+					? "j/k scroll  h/l focus  [/] source  Esc back"
+					: "j/k scroll  h/l focus  Esc back";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;

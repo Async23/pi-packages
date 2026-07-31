@@ -28,13 +28,14 @@ Run:
 
 The inspector lists the Skills Pi discovered for the current session, groups them by their actual source, and previews each `SKILL.md` with theme-aware YAML frontmatter and Markdown highlighting. The selected file path remains visible in both wide and narrow layouts.
 
-- Up/Down or `j`/`k` selects a Skill or scrolls the focused preview when filter input is inactive.
-- Left/Right or `h`/`l` switches between source filters that actually contain discovered Skills when filter input is inactive.
-- Tab switches between the Skill list and preview on wide terminals.
-- `/` enters filter input from either pane. Typing ranks exact, close, and fuzzy Skill-name matches first; descriptions, sources, and paths match contiguous text only.
-- While filter input is active, all printable characters—including `h`, `j`, `k`, `l`, Space, and `?`—edit the query. Up/Down navigates results, Backspace deletes, Enter keeps the filter, and Escape cancels the edit and restores the previous filter.
+- Up/Down or `j`/`k` selects a Skill while Skills is focused and scrolls while Preview is focused.
+- Left/Right or `h`/`l` cycles focus between Skills and Preview. Moving past either end wraps to the other pane; Tab remains an alternative on wide terminals.
+- `[`/`]` cycles backward/forward through source filters that contain discovered Skills. Moving past either end wraps around.
+- `/` enters filter input from either pane; it is a trigger, not part of the displayed query. Typing ranks exact, close, and fuzzy Skill-name matches first; descriptions, sources, and paths match contiguous text only.
+- Filter input uses Pi's native single-line editor, including Unicode/IME cursor positioning, paste, Left/Right, Home/End, and customized keybindings. Defaults include Backspace or Ctrl+H to delete a character, Ctrl+W to delete a word, and Ctrl+U to delete to the start.
+- While filter input is active, printable characters—including `h`, `j`, `k`, `l`, `[`, `]`, Space, and `?`—edit the query. Up/Down navigates results, Enter keeps the filter, and Escape cancels the edit and restores the previous filter.
 - Outside filter input, Escape returns from the narrow Preview first, then clears a kept filter before closing the inspector. Pending access changes still require explicit discard confirmation.
-- Space cycles the selected Skill's access while the Skill list is focused.
+- Space cycles access forward; Shift+Space cycles backward when the terminal reports shifted Space distinctly. `r` resets the selected Skill to its default, and `u` undoes the latest access change.
 - `?` opens a read-only guide to the four access states.
 - Ctrl+S writes and applies all pending changes; no Pi reload is needed.
 
@@ -49,9 +50,9 @@ Model access and direct user access are independent:
 | **User only** | No | Yes |
 | **Neither** | No | No |
 
-The inspector uses one Unicode symbol for each state: `●` Model + User, `◐` Model only, `◑` User only, and `○` Neither. Rows that differ from the Skill default show `Non-default`; default rows leave that space empty. `disable-model-invocation: true` maps to **User only** by default. An explicit policy can override that default in either direction.
+The inspector uses one Unicode symbol for each state: `●` Model + User, `◐` Model only, `◑` User only, and `○` Neither. Every row labels its policy status as `Default`, `Override`, or `Pending`. The selected Skill also shows its current access, frontmatter default, and whether it is using the default, a saved override, a pending override, or a pending reset. `disable-model-invocation: true` maps to **User only** by default. An explicit policy can override that default in either direction.
 
-Press Space repeatedly to cycle **Model + User → Model only → User only → Neither**. Changes remain pending until Ctrl+S. When the cycle reaches the Skill's default state, the saved override is removed automatically so the Skill follows its frontmatter again. Space does not change access while the preview is focused.
+Press Space repeatedly to cycle **Model + User → Model only → User only → Neither**; Shift+Space cycles in reverse. Changes remain pending until Ctrl+S. When the cycle reaches the Skill's default state—or when `r` resets it—the saved override is removed automatically so the Skill follows its frontmatter again. `u` restores the previous pending access value. Access shortcuts do nothing while the preview is focused.
 
 Effective policy precedence is:
 

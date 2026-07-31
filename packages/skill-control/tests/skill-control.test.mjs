@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -10,7 +11,11 @@ const codingAgentUrl = pathToFileURL(
 	join(peerRoot, "@earendil-works/pi-coding-agent/dist/index.js"),
 ).href;
 
+const peerRequire = createRequire(codingAgentUrl);
+const tuiUrl = pathToFileURL(peerRequire.resolve("@earendil-works/pi-tui")).href;
+
 const { formatSkillsForPrompt } = await import(codingAgentUrl);
+const { CURSOR_MARKER, visibleWidth } = await import(tuiUrl);
 const extension = await import("../extensions/index.ts");
 const {
 	SkillControlPanel,
@@ -176,6 +181,10 @@ const plainTheme = {
 	bold: (text) => text,
 };
 
+function terminalText(text) {
+	return text.replaceAll(CURSOR_MARKER, "").replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 function makePanelItem(name, sourceKind, sourceLabel, options = {}) {
 	return {
 		path: `/skills/${name}/SKILL.md`,
@@ -258,11 +267,13 @@ test("wide preview shows the selected path before the Skill body without redunda
 	const preview = widePreview(panel);
 
 	assert.match(preview, /\/skills\/agents-both\/SKILL\.md/);
+	assert.match(preview, /Current Model \+ User · Default Model \+ User · Using default/);
 	assert.match(preview, /# agents-both/);
-	assert.ok(preview.indexOf("/skills/agents-both/SKILL.md") < preview.indexOf("# agents-both"));
+	assert.ok(preview.indexOf("/skills/agents-both/SKILL.md") < preview.indexOf("Current Model + User"));
+	assert.ok(preview.indexOf("Current Model + User") < preview.indexOf("# agents-both"));
 	assert.doesNotMatch(
 		preview,
-		/agents-both description|Access from|Agents \(user\)|Model \+ User|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/,
+		/agents-both description|Access from|Agents \(user\)|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/,
 	);
 });
 
@@ -306,83 +317,162 @@ tags:
 	assert.ok(hasStyle("mdHeading", "# highlighted"));
 });
 
-test("Skill rows mark only access that differs from the Skill default", () => {
+test("Skill rows and selected details distinguish Default, Override, and Pending", () => {
 	const panel = makePanel();
-	const list = wideList(panel);
+	panel.render(120);
 
-	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
-	assert.doesNotMatch(listLine(panel, "agents-user"), /Non-default/);
-	assert.match(listLine(panel, "agents-project"), /Non-default/);
-	assert.match(listLine(panel, "settings-model"), /Non-default/);
-	assert.doesNotMatch(list, /Model \+ User|Model only|User only|Neither/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
+	assert.match(listLine(panel, "agents-user"), /Default/);
+	assert.match(listLine(panel, "agents-project"), /Override/);
+	assert.match(listLine(panel, "settings-model"), /Override/);
+	assert.doesNotMatch(wideList(panel), /Non-default|Pending/);
+	assert.match(widePreview(panel), /Current Model \+ User · Default Model \+ User · Using default/);
+
+	panel.handleInput("j");
+	panel.handleInput("j");
+	assert.match(widePreview(panel), /Current Neither · Default Model \+ User · Saved override/);
+	panel.handleInput(" ");
+	assert.match(listLine(panel, "agents-project"), /Pending/);
+	assert.match(widePreview(panel), /Current Model \+ User · Default Model \+ User · Pending reset/);
+	panel.handleInput("u");
+	assert.match(listLine(panel, "agents-project"), /Override/);
+	assert.match(widePreview(panel), /Current Neither · Default Model \+ User · Saved override/);
 });
 
 test("wide footer follows the focused pane", () => {
 	const panel = makePanel();
 	let output = panel.render(120).join("\n");
 
-	assert.match(output, /j\/k select\s+\/ filter\s+Space cycle\s+\? guide\s+Tab Preview\s+h\/l source/);
-	assert.doesNotMatch(output, /Enter Preview/);
-	assert.doesNotMatch(output, /PgUp\/PgDn scroll|Tab Skills/);
-
-	panel.handleInput("ENTER");
-	output = panel.render(120).join("\n");
-	assert.match(output, /Tab Preview/);
-	assert.doesNotMatch(output, /Tab Skills/);
+	assert.match(
+		output,
+		/j\/k select\s+h\/l focus\s+\[\/\] source\s+\/ filter\s+Space\/⇧Space\s+r default\s+u undo/,
+	);
+	assert.doesNotMatch(output, /PgUp\/PgDn scroll/);
 
 	panel.handleInput("\t");
 	output = panel.render(120).join("\n");
+	assert.match(output, /j\/k\/PgUp\/PgDn scroll\s+h\/l focus\s+\[\/\] source\s+\/ filter/);
+	assert.doesNotMatch(output, /Type filter|j\/k select|Space\/⇧Space/);
 
-	assert.match(output, /j\/k\/PgUp\/PgDn scroll\s+\/ filter\s+\? guide\s+Tab Skills\s+h\/l source/);
-	assert.doesNotMatch(output, /Type filter|Enter Preview|Tab Preview|Space cycle/);
+	panel.handleInput("\t");
+	output = panel.render(120).join("\n");
+	assert.match(output, /j\/k select\s+h\/l focus\s+\[\/\] source/);
 });
 
-test("narrow layouts keep the selected path without repeating access metadata", () => {
+test("narrow layouts keep the selected path and cycle focus with h/l", () => {
 	const panel = makePanel();
 	let output = panel.render(48).join("\n");
 	assert.match(output, /\/skills\/agents-both\/SKILL\.md/);
 	assert.doesNotMatch(output, /Skill default|Saved setting/);
 
-	panel.handleInput("ENTER");
+	panel.handleInput("l");
 	output = panel.render(48).join("\n");
-
 	assert.match(output, /Skill preview/);
 	assert.match(output, /\/skills\/agents-both\/SKILL\.md/);
+	assert.match(output, /Current Model \+ User · Default Model \+ User/);
 	assert.match(output, /# agents-both/);
 	assert.doesNotMatch(output, /agents-both description|Access from|Agents \(user\)|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/);
+
+	panel.handleInput("l");
+	assert.doesNotMatch(panel.render(48).join("\n"), /Skill preview/);
+	panel.handleInput("h");
+	assert.match(panel.render(48).join("\n"), /Skill preview/);
 });
 
-test("filter input requires slash and treats hjkl as query text", () => {
+test("filter input requires slash, hides the trigger, and treats hjkl as query text", () => {
 	const panel = makePanel();
+	panel.focused = true;
 	panel.render(120);
 	for (const character of "abc") panel.handleInput(character);
-	let output = panel.render(120).join("\n");
+	let output = terminalText(panel.render(120).join("\n"));
 
 	assert.match(output, /Filter\s+\/ to filter skills/);
 	assert.match(output, /agents-both/);
 
 	panel.handleInput("/");
 	for (const character of "skill") panel.handleInput(character);
-	output = panel.render(120).join("\n");
+	const rendered = panel.render(120).join("\n");
+	output = terminalText(rendered);
 
-	assert.match(output, /Filter\s+\/skill_/);
+	assert.ok(rendered.includes(CURSOR_MARKER));
+	assert.match(output, /Filter\s+skill/);
+	assert.doesNotMatch(output, /Filter\s+\/skill/);
 	assert.match(output, /cli-skill/);
-	assert.match(output, /Type filter\s+↑↓ select\s+Enter keep\s+Esc cancel/);
+	assert.match(output, /Type filter\s+←\/→ cursor\s+↑\/↓ select\s+Ctrl\+U clear\s+Ctrl\+W word/);
 });
 
-test("vim-style hjkl navigate outside filter input", () => {
+test("filter input supports cursor editing, paste, and command-line deletion keys", () => {
 	const panel = makePanel();
+	panel.focused = true;
+	panel.render(120);
+	panel.handleInput("/");
+	panel.handleInput("skll");
+	panel.handleInput("\x1b[D");
+	panel.handleInput("\x1b[D");
+	panel.handleInput("i");
+	panel.handleInput("\x1b[F");
+	panel.handleInput("\x1b[200~-中文\x1b[201~");
+	let output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /Filter\s+skill-中文/);
+
+	panel.handleInput("\x15");
+	panel.handleInput("alpha beta");
+	panel.handleInput("\x17");
+	panel.handleInput("ENTER");
+	output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /Filter\s+alpha/);
+	assert.doesNotMatch(output, /beta|Filter\s+\//);
+
+	panel.handleInput("/");
+	panel.handleInput("x");
+	panel.handleInput("\x08");
+	panel.handleInput("\x15");
+	panel.handleInput("skill");
+	panel.handleInput("ENTER");
+	output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /Filter\s+skill/);
+	assert.match(output, /cli-skill/);
+});
+
+test("h/l cycle focus while j/k follow the focused pane", () => {
+	const items = [
+		makePanelItem("first", "agents", "Agents (user)", {
+			content: Array.from({ length: 40 }, (_, index) => `line-${String(index + 1).padStart(2, "0")}`).join("\n"),
+		}),
+		makePanelItem("second", "agents", "Agents (user)"),
+	];
+	const panel = makePanel(() => undefined, { items });
 	panel.render(120);
 
 	panel.handleInput("j");
-	assert.match(widePreview(panel), /\/skills\/agents-user\/SKILL\.md/);
+	assert.match(widePreview(panel), /\/skills\/second\/SKILL\.md/);
 	panel.handleInput("k");
-	assert.match(widePreview(panel), /\/skills\/agents-both\/SKILL\.md/);
+	assert.match(widePreview(panel), /\/skills\/first\/SKILL\.md/);
 
 	panel.handleInput("l");
-	assert.match(panel.render(120).join("\n"), /Sources\s+ALL 6\s+\[Agents 3\]/);
+	assert.match(panel.render(120).join("\n"), /j\/k\/PgUp\/PgDn scroll\s+h\/l focus/);
+	const beforeScroll = widePreview(panel);
+	panel.handleInput("j");
+	assert.notEqual(widePreview(panel), beforeScroll);
+
+	panel.handleInput("l");
+	assert.match(panel.render(120).join("\n"), /j\/k select\s+h\/l focus/);
 	panel.handleInput("h");
-	assert.match(panel.render(120).join("\n"), /Sources\s+\[ALL 6\]\s+Agents 3/);
+	assert.match(panel.render(120).join("\n"), /j\/k\/PgUp\/PgDn scroll\s+h\/l focus/);
+	panel.handleInput("h");
+	assert.match(panel.render(120).join("\n"), /j\/k select\s+h\/l focus/);
+});
+
+test("[/] cycle source filters in both directions", () => {
+	const panel = makePanel();
+	panel.render(120);
+
+	for (const expected of ["Agents 3", "Package 1", "Settings 1", "CLI 1", "ALL 6"]) {
+		panel.handleInput("]");
+		assert.match(panel.render(120).join("\n"), new RegExp(`\\[${expected}\\]`));
+	}
+	panel.handleInput("[");
+	assert.match(panel.render(120).join("\n"), /\[CLI 1\]/);
 });
 
 test("Enter keeps a filter while Esc cancels editing, clears the filter, then closes", () => {
@@ -394,22 +484,22 @@ test("Enter keeps a filter while Esc cancels editing, clears the filter, then cl
 	panel.handleInput("/");
 	for (const character of "skill") panel.handleInput(character);
 	panel.handleInput("ENTER");
-	let output = panel.render(120).join("\n");
+	let output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+\/skill/);
-	assert.doesNotMatch(output, /\/skill_/);
-	assert.match(output, /j\/k select\s+\/ filter/);
+	assert.match(output, /Filter\s+skill/);
+	assert.doesNotMatch(output, /Filter\s+\/skill/);
+	assert.match(output, /j\/k select\s+h\/l focus\s+\[\/\] source\s+\/ filter/);
 
 	panel.handleInput("/");
 	panel.handleInput("x");
-	assert.match(panel.render(120).join("\n"), /Filter\s+\/skillx_/);
+	assert.match(terminalText(panel.render(120).join("\n")), /Filter\s+skillx/);
 	panel.handleInput("ESC");
-	output = panel.render(120).join("\n");
-	assert.match(output, /Filter\s+\/skill/);
-	assert.doesNotMatch(output, /skillx|\/skill_/);
+	output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /Filter\s+skill/);
+	assert.doesNotMatch(output, /skillx|Filter\s+\/skill/);
 
 	panel.handleInput("ESC");
-	output = panel.render(120).join("\n");
+	output = terminalText(panel.render(120).join("\n"));
 	assert.match(output, /Filter\s+\/ to filter skills/);
 	assert.equal(result, undefined);
 
@@ -417,17 +507,18 @@ test("Enter keeps a filter while Esc cancels editing, clears the filter, then cl
 	assert.deepEqual(result, { action: "close" });
 });
 
-test("filter input takes precedence over shortcuts and can start from Preview", () => {
+test("filter input takes precedence over focus and source shortcuts", () => {
 	const panel = makePanel();
 	panel.render(120);
-	panel.handleInput("\t");
+	panel.handleInput("]");
+	panel.handleInput("l");
 	panel.handleInput("/");
-	panel.handleInput(" ");
-	panel.handleInput("?");
-	const output = panel.render(120).join("\n");
+	for (const character of "hl[] ?") panel.handleInput(character);
+	const output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+\/ \?_/);
-	assert.match(output, /Type filter\s+↑↓ select\s+Enter keep\s+Esc cancel/);
+	assert.match(output, /Sources\s+ALL 6\s+\[Agents 3\]/);
+	assert.match(output, /Filter\s+hl\[\] \?/);
+	assert.match(output, /Type filter\s+←\/→ cursor\s+↑\/↓ select/);
 	assert.doesNotMatch(output, /Skill access guide|Pending 1/);
 });
 
@@ -436,7 +527,7 @@ test("Space cycles all four access states directly in the list", () => {
 	panel.render(120);
 	panel.handleInput(" ");
 	let output = panel.render(120).join("\n");
-	assert.match(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(listLine(panel, "agents-both"), /Pending/);
 	assert.match(output, /Model \+ User → Model only · Pending 1/);
 
 	panel.handleInput(" ");
@@ -449,8 +540,34 @@ test("Space cycles all four access states directly in the list", () => {
 
 	panel.handleInput(" ");
 	output = panel.render(120).join("\n");
-	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
 	assert.match(output, /Neither → Model \+ User \(default\) · No pending changes/);
+});
+
+test("Shift+Space reverses access while r resets and u undoes the latest access change", () => {
+	const panel = makePanel();
+	panel.render(120);
+
+	panel.handleInput("\x1b[32;2u");
+	let output = panel.render(120).join("\n");
+	assert.match(output, /Model \+ User → Neither · Pending 1/);
+	assert.match(listLine(panel, "agents-both"), /Pending/);
+
+	panel.handleInput("u");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Undo agents-both: Neither → Model \+ User/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
+
+	panel.handleInput(" ");
+	panel.handleInput("r");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Model only → Model \+ User \(default\) · No pending changes/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
+
+	panel.handleInput("u");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Undo agents-both: Model \+ User → Model only/);
+	assert.match(listLine(panel, "agents-both"), /Pending/);
 });
 
 test("cycling to the Skill default removes the saved override", () => {
@@ -465,7 +582,7 @@ test("cycling to the Skill default removes the saved override", () => {
 	panel.handleInput(" ");
 
 	const output = panel.render(120).join("\n");
-	assert.doesNotMatch(listLine(panel, "settings-model"), /Non-default/);
+	assert.match(listLine(panel, "settings-model"), /Pending/);
 	assert.match(output, /Neither → Model \+ User \(default\) · Pending 1/);
 
 	panel.handleInput("\x13");
@@ -527,7 +644,7 @@ test("the access guide explains the matrix without editing controls", () => {
 	panel.handleInput("ESC");
 	output = panel.render(120).join("\n");
 	assert.match(listLine(panel, "agents-both"), /agents-both/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
 });
 
 test("Space does not change access while Preview is focused", () => {
@@ -539,7 +656,7 @@ test("Space does not change access while Preview is focused", () => {
 	const output = panel.render(120).join("\n");
 
 	assert.match(listLine(panel, "agents-both"), /agents-both/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(listLine(panel, "agents-both"), /Default/);
 	assert.doesNotMatch(output, /Pending 1/);
 });
 
@@ -547,24 +664,24 @@ test("panel wraps the compact header and guide within narrow terminals", () => {
 	const width = 48;
 	const panel = makePanel();
 	let lines = panel.render(width);
-	let output = lines.join("\n");
-	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
+	let output = terminalText(lines.join("\n"));
+	assert.ok(lines.every((line) => visibleWidth(line) === width));
 	for (const expected of ["Access", "Sources", "Agents 3", "Package 1", "Filter", "/ to filter skills"]) {
 		assert.ok(output.includes(expected), `missing narrow header content: ${expected}`);
 	}
 
 	panel.handleInput("/");
 	lines = panel.render(width);
-	output = lines.join("\n");
-	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
-	assert.match(output, /Filter\s+\/_/);
+	output = terminalText(lines.join("\n"));
+	assert.ok(lines.every((line) => visibleWidth(line) === width));
+	assert.doesNotMatch(output, /Filter\s+\//);
 	assert.match(output, /Type filter\s+Enter keep\s+Esc cancel/);
 
 	panel.handleInput("ESC");
 	panel.handleInput("?");
 	lines = panel.render(width);
-	output = lines.join("\n");
-	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
+	output = terminalText(lines.join("\n"));
+	assert.ok(lines.every((line) => visibleWidth(line) === width));
 	assert.match(output, /Skill access guide/);
 });
 
@@ -585,9 +702,10 @@ test("search fuzzy-matches non-contiguous name segments", () => {
 	panel.render(120);
 	panel.handleInput("/");
 	for (const character of "my-html") panel.handleInput(character);
-	const output = panel.render(120).join("\n");
+	const output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+\/my-html_/);
+	assert.match(output, /Filter\s+my-html/);
+	assert.doesNotMatch(output, /Filter\s+\/my-html/);
 	assert.match(output, /my-pptx-html-local/);
 	assert.doesNotMatch(output, /my-pptx-local/);
 	assert.doesNotMatch(output, /No skills match/);
