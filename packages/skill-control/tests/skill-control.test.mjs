@@ -321,7 +321,7 @@ test("wide footer follows the focused pane", () => {
 	const panel = makePanel();
 	let output = panel.render(120).join("\n");
 
-	assert.match(output, /↑↓ select\s+Type search\s+Space cycle\s+\? guide\s+Tab Preview/);
+	assert.match(output, /j\/k select\s+\/ filter\s+Space cycle\s+\? guide\s+Tab Preview\s+h\/l source/);
 	assert.doesNotMatch(output, /Enter Preview/);
 	assert.doesNotMatch(output, /PgUp\/PgDn scroll|Tab Skills/);
 
@@ -333,8 +333,8 @@ test("wide footer follows the focused pane", () => {
 	panel.handleInput("\t");
 	output = panel.render(120).join("\n");
 
-	assert.match(output, /↑↓\/PgUp\/PgDn scroll\s+\? guide\s+Tab Skills/);
-	assert.doesNotMatch(output, /Type search|Enter Preview|Tab Preview|Space cycle/);
+	assert.match(output, /j\/k\/PgUp\/PgDn scroll\s+\/ filter\s+\? guide\s+Tab Skills\s+h\/l source/);
+	assert.doesNotMatch(output, /Type filter|Enter Preview|Tab Preview|Space cycle/);
 });
 
 test("narrow layouts keep the selected path without repeating access metadata", () => {
@@ -352,14 +352,83 @@ test("narrow layouts keep the selected path without repeating access metadata", 
 	assert.doesNotMatch(output, /agents-both description|Access from|Agents \(user\)|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/);
 });
 
-test("search accepts h and l instead of treating them as hidden navigation keys", () => {
+test("filter input requires slash and treats hjkl as query text", () => {
 	const panel = makePanel();
 	panel.render(120);
+	for (const character of "abc") panel.handleInput(character);
+	let output = panel.render(120).join("\n");
+
+	assert.match(output, /Filter\s+\/ to filter skills/);
+	assert.match(output, /agents-both/);
+
+	panel.handleInput("/");
 	for (const character of "skill") panel.handleInput(character);
+	output = panel.render(120).join("\n");
+
+	assert.match(output, /Filter\s+\/skill_/);
+	assert.match(output, /cli-skill/);
+	assert.match(output, /Type filter\s+↑↓ select\s+Enter keep\s+Esc cancel/);
+});
+
+test("vim-style hjkl navigate outside filter input", () => {
+	const panel = makePanel();
+	panel.render(120);
+
+	panel.handleInput("j");
+	assert.match(widePreview(panel), /\/skills\/agents-user\/SKILL\.md/);
+	panel.handleInput("k");
+	assert.match(widePreview(panel), /\/skills\/agents-both\/SKILL\.md/);
+
+	panel.handleInput("l");
+	assert.match(panel.render(120).join("\n"), /Sources\s+ALL 6\s+\[Agents 3\]/);
+	panel.handleInput("h");
+	assert.match(panel.render(120).join("\n"), /Sources\s+\[ALL 6\]\s+Agents 3/);
+});
+
+test("Enter keeps a filter while Esc cancels editing, clears the filter, then closes", () => {
+	let result;
+	const panel = makePanel((value) => {
+		result = value;
+	});
+	panel.render(120);
+	panel.handleInput("/");
+	for (const character of "skill") panel.handleInput(character);
+	panel.handleInput("ENTER");
+	let output = panel.render(120).join("\n");
+
+	assert.match(output, /Filter\s+\/skill/);
+	assert.doesNotMatch(output, /\/skill_/);
+	assert.match(output, /j\/k select\s+\/ filter/);
+
+	panel.handleInput("/");
+	panel.handleInput("x");
+	assert.match(panel.render(120).join("\n"), /Filter\s+\/skillx_/);
+	panel.handleInput("ESC");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Filter\s+\/skill/);
+	assert.doesNotMatch(output, /skillx|\/skill_/);
+
+	panel.handleInput("ESC");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Filter\s+\/ to filter skills/);
+	assert.equal(result, undefined);
+
+	panel.handleInput("ESC");
+	assert.deepEqual(result, { action: "close" });
+});
+
+test("filter input takes precedence over shortcuts and can start from Preview", () => {
+	const panel = makePanel();
+	panel.render(120);
+	panel.handleInput("\t");
+	panel.handleInput("/");
+	panel.handleInput(" ");
+	panel.handleInput("?");
 	const output = panel.render(120).join("\n");
 
-	assert.match(output, /Search\s+skill_/);
-	assert.match(output, /cli-skill/);
+	assert.match(output, /Filter\s+\/ \?_/);
+	assert.match(output, /Type filter\s+↑↓ select\s+Enter keep\s+Esc cancel/);
+	assert.doesNotMatch(output, /Skill access guide|Pending 1/);
 });
 
 test("Space cycles all four access states directly in the list", () => {
@@ -480,10 +549,18 @@ test("panel wraps the compact header and guide within narrow terminals", () => {
 	let lines = panel.render(width);
 	let output = lines.join("\n");
 	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
-	for (const expected of ["Access", "Sources", "Agents 3", "Package 1", "Search", "filter skills_"]) {
+	for (const expected of ["Access", "Sources", "Agents 3", "Package 1", "Filter", "/ to filter skills"]) {
 		assert.ok(output.includes(expected), `missing narrow header content: ${expected}`);
 	}
 
+	panel.handleInput("/");
+	lines = panel.render(width);
+	output = lines.join("\n");
+	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
+	assert.match(output, /Filter\s+\/_/);
+	assert.match(output, /Type filter\s+Enter keep\s+Esc cancel/);
+
+	panel.handleInput("ESC");
 	panel.handleInput("?");
 	lines = panel.render(width);
 	output = lines.join("\n");
@@ -506,10 +583,11 @@ test("search fuzzy-matches non-contiguous name segments", () => {
 		onDone: () => undefined,
 	});
 	panel.render(120);
+	panel.handleInput("/");
 	for (const character of "my-html") panel.handleInput(character);
 	const output = panel.render(120).join("\n");
 
-	assert.match(output, /Search\s+my-html_/);
+	assert.match(output, /Filter\s+\/my-html_/);
 	assert.match(output, /my-pptx-html-local/);
 	assert.doesNotMatch(output, /my-pptx-local/);
 	assert.doesNotMatch(output, /No skills match/);
@@ -526,6 +604,7 @@ test("search ranks typo-close names without fuzzy-matching long descriptions", (
 		],
 	});
 	panel.render(120);
+	panel.handleInput("/");
 	for (const character of "myboos") panel.handleInput(character);
 	const list = wideList(panel);
 

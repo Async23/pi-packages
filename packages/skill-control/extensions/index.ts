@@ -347,6 +347,9 @@ export class SkillControlPanel implements Component {
 	readonly #onDone: (result: SkillControlPanelResult) => void;
 
 	#query = "";
+	#filterEditing = false;
+	#queryBeforeEdit = "";
+	#selectedIndexBeforeFilter = 0;
 	#selectedIndex = 0;
 	#providerIndex = 0;
 	#focus: PanelFocus = "list";
@@ -421,16 +424,28 @@ export class SkillControlPanel implements Component {
 		}
 		const wide = this.#lastWidth >= WIDE_LAYOUT_MIN_WIDTH;
 
+		if (this.#filterEditing && this.#handleFilterInput(data, wide)) {
+			this.#requestRender();
+			return;
+		}
+
 		if (this.#keybindings.matches(data, "tui.select.cancel")) {
 			if (!wide && this.#narrowView === "preview") {
 				this.#narrowView = "list";
 				this.#focus = "list";
+			} else if (this.#query.length > 0) {
+				this.#clearFilter();
 			} else if (this.#isDirty()) {
 				this.#confirmDiscard = true;
 			} else {
 				this.#onDone({ action: "close" });
 				return;
 			}
+			this.#requestRender();
+			return;
+		}
+		if (data === "/") {
+			this.#beginFilterEditing();
 			this.#requestRender();
 			return;
 		}
@@ -441,12 +456,12 @@ export class SkillControlPanel implements Component {
 			return;
 		}
 
-		if (matchesKey(data, Key.left)) {
+		if (matchesKey(data, Key.left) || data === "h") {
 			this.#moveProvider(-1);
 			this.#requestRender();
 			return;
 		}
-		if (matchesKey(data, Key.right)) {
+		if (matchesKey(data, Key.right) || data === "l") {
 			this.#moveProvider(1);
 			this.#requestRender();
 			return;
@@ -467,6 +482,78 @@ export class SkillControlPanel implements Component {
 
 	#requestRender(): void {
 		this.#tui.requestRender();
+	}
+
+	#beginFilterEditing(): void {
+		this.#filterEditing = true;
+		this.#queryBeforeEdit = this.#query;
+		this.#selectedIndexBeforeFilter = this.#selectedIndex;
+		this.#focus = "list";
+		this.#narrowView = "list";
+		this.#flash = undefined;
+	}
+
+	#commitFilterEditing(): void {
+		this.#filterEditing = false;
+		this.#queryBeforeEdit = this.#query;
+		this.#selectedIndexBeforeFilter = this.#selectedIndex;
+		this.#flash = undefined;
+	}
+
+	#cancelFilterEditing(): void {
+		this.#query = this.#queryBeforeEdit;
+		this.#filterEditing = false;
+		this.#resetFilterNavigation(this.#selectedIndexBeforeFilter);
+	}
+
+	#clearFilter(): void {
+		this.#query = "";
+		this.#queryBeforeEdit = "";
+		this.#resetFilterNavigation(0);
+	}
+
+	#setFilterQuery(query: string): void {
+		this.#query = query;
+		this.#resetFilterNavigation(0);
+	}
+
+	#resetFilterNavigation(selectedIndex: number): void {
+		const lastIndex = Math.max(0, this.#filteredItems().length - 1);
+		this.#selectedIndex = Math.max(0, Math.min(selectedIndex, lastIndex));
+		this.#previewOffset = 0;
+		this.#previewCache = undefined;
+		this.#flash = undefined;
+	}
+
+	#handleFilterInput(data: string, wide: boolean): boolean {
+		const items = this.#filteredItems();
+		if (this.#keybindings.matches(data, "tui.select.cancel")) {
+			this.#cancelFilterEditing();
+		} else if (this.#keybindings.matches(data, "tui.select.confirm")) {
+			this.#commitFilterEditing();
+		} else if (this.#keybindings.matches(data, "tui.select.up")) {
+			this.#moveSelection(-1);
+		} else if (this.#keybindings.matches(data, "tui.select.down")) {
+			this.#moveSelection(1);
+		} else if (this.#keybindings.matches(data, "tui.select.pageUp")) {
+			this.#setSelection(this.#selectedIndex - 8);
+		} else if (this.#keybindings.matches(data, "tui.select.pageDown")) {
+			this.#setSelection(this.#selectedIndex + 8);
+		} else if (matchesKey(data, Key.home)) {
+			this.#setSelection(0);
+		} else if (matchesKey(data, Key.end)) {
+			this.#setSelection(items.length - 1);
+		} else if (wide && matchesKey(data, Key.tab)) {
+			this.#commitFilterEditing();
+			this.#focus = "preview";
+		} else if (matchesKey(data, Key.backspace)) {
+			this.#setFilterQuery(this.#query.slice(0, -1));
+		} else if (this.#isPrintable(data)) {
+			this.#setFilterQuery(this.#query + data);
+		} else {
+			return false;
+		}
+		return true;
 	}
 
 	#isDirty(): boolean {
@@ -657,9 +744,9 @@ export class SkillControlPanel implements Component {
 
 	#handleListInput(data: string, wide: boolean): void {
 		const items = this.#filteredItems();
-		if (this.#keybindings.matches(data, "tui.select.up")) {
+		if (this.#keybindings.matches(data, "tui.select.up") || data === "k") {
 			this.#moveSelection(-1);
-		} else if (this.#keybindings.matches(data, "tui.select.down")) {
+		} else if (this.#keybindings.matches(data, "tui.select.down") || data === "j") {
 			this.#moveSelection(1);
 		} else if (this.#keybindings.matches(data, "tui.select.pageUp")) {
 			this.#setSelection(this.#selectedIndex - 8);
@@ -677,26 +764,14 @@ export class SkillControlPanel implements Component {
 				this.#narrowView = "preview";
 			}
 			this.#flash = undefined;
-		} else if (matchesKey(data, Key.backspace)) {
-			this.#query = this.#query.slice(0, -1);
-			this.#selectedIndex = 0;
-			this.#previewOffset = 0;
-			this.#previewCache = undefined;
-			this.#flash = undefined;
-		} else if (this.#isPrintable(data)) {
-			this.#query += data;
-			this.#selectedIndex = 0;
-			this.#previewOffset = 0;
-			this.#previewCache = undefined;
-			this.#flash = undefined;
 		}
 	}
 
 	#handlePreviewInput(data: string, wide: boolean): void {
 		const pageSize = Math.max(1, this.#lastPreviewViewportHeight - 1);
-		if (this.#keybindings.matches(data, "tui.select.up")) {
+		if (this.#keybindings.matches(data, "tui.select.up") || data === "k") {
 			this.#scrollPreview(-1);
-		} else if (this.#keybindings.matches(data, "tui.select.down")) {
+		} else if (this.#keybindings.matches(data, "tui.select.down") || data === "j") {
 			this.#scrollPreview(1);
 		} else if (this.#keybindings.matches(data, "tui.select.pageUp") || matchesKey(data, Key.pageUp)) {
 			this.#scrollPreview(-pageSize);
@@ -719,7 +794,7 @@ export class SkillControlPanel implements Component {
 	}
 
 	#isPrintable(data: string): boolean {
-		if (!data || data === " ") return false;
+		if (!data) return false;
 		return [...data].every((character) => {
 			const codePoint = character.codePointAt(0) ?? 0;
 			return codePoint >= 32 && codePoint !== 127;
@@ -933,10 +1008,13 @@ export class SkillControlPanel implements Component {
 	}
 
 	#searchValue(width: number): string {
-		const placeholder = width >= 42 ? "type to filter skills" : "filter skills";
-		return this.#query
-			? `${this.#theme.fg("text", this.#query)}${this.#theme.fg("accent", "_")}`
-			: `${this.#theme.fg("dim", placeholder)}${this.#theme.fg("accent", "_")}`;
+		const slash = this.#theme.fg("accent", "/");
+		if (this.#filterEditing) {
+			return `${slash}${this.#theme.fg("text", this.#query)}${this.#theme.fg("accent", "_")}`;
+		}
+		if (this.#query) return `${slash}${this.#theme.fg("text", this.#query)}`;
+		const placeholder = width >= 42 ? " to filter skills" : " filter";
+		return `${slash}${this.#theme.fg("dim", placeholder)}`;
 	}
 
 	#sectionSegment(label: string, width: number, focused: boolean): string {
@@ -1120,7 +1198,7 @@ export class SkillControlPanel implements Component {
 	#renderPreviewRows(width: number, height: number): string[] {
 		const item = this.#currentItem();
 		if (!item) {
-			const message = this.#items.length === 0 ? "No skill content to preview." : "Edit the search to select a skill.";
+			const message = this.#items.length === 0 ? "No skill content to preview." : "Press / to change the filter.";
 			return [
 				this.#paneContent(this.#theme.fg("muted", message), width),
 				...Array.from({ length: height - 1 }, () => " ".repeat(width)),
@@ -1171,7 +1249,7 @@ export class SkillControlPanel implements Component {
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
+		for (const searchLine of this.#labeledTextLines("Filter", this.#searchValue(headerWidth), headerWidth)) {
 			lines.push(this.#fullLine(searchLine, innerWidth));
 		}
 		lines.push(
@@ -1202,10 +1280,11 @@ export class SkillControlPanel implements Component {
 				"┴",
 			)}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`,
 		);
-		const help =
-			this.#focus === "list"
-				? "↑↓ select   Type search   Space cycle   ? guide   Tab Preview   ←/→ source   Ctrl+S apply   Esc close"
-				: "↑↓/PgUp/PgDn scroll   ? guide   Tab Skills   ←/→ source   Ctrl+S apply   Esc close";
+		const help = this.#filterEditing
+			? "Type filter   ↑↓ select   Enter keep   Esc cancel"
+			: this.#focus === "list"
+				? "j/k select   / filter   Space cycle   ? guide   Tab Preview   h/l source   Ctrl+S apply   Esc close"
+				: "j/k/PgUp/PgDn scroll   / filter   ? guide   Tab Skills   h/l source   Ctrl+S apply   Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1225,7 +1304,7 @@ export class SkillControlPanel implements Component {
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		for (const searchLine of this.#labeledTextLines("Search", this.#searchValue(headerWidth), headerWidth)) {
+		for (const searchLine of this.#labeledTextLines("Filter", this.#searchValue(headerWidth), headerWidth)) {
 			lines.push(this.#fullLine(searchLine, innerWidth));
 		}
 		lines.push(
@@ -1243,15 +1322,18 @@ export class SkillControlPanel implements Component {
 		if (selected) {
 			lines.push(this.#fullLine(this.#theme.fg("text", selected.label), innerWidth));
 		} else {
-			lines.push(this.#fullLine(this.#theme.fg("dim", "Edit search to select a skill."), innerWidth));
+			lines.push(this.#fullLine(this.#theme.fg("dim", "Press / to change the filter."), innerWidth));
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
-		const help =
-			width >= 74
-				? "←/→ source  ↑↓ select  Enter preview  Space cycle  ? guide  Ctrl+S apply"
+		const help = this.#filterEditing
+			? width >= 56
+				? "Type filter  ↑↓ select  Enter keep  Esc cancel"
+				: "Type filter  Enter keep  Esc cancel"
+			: width >= 74
+				? "h/l source  j/k select  Enter preview  / filter  Space cycle  ? guide"
 				: width >= 56
-					? "←/→ source  ↑↓ select  Space cycle  ? guide"
-					: "↑↓ select  Space cycle  ? guide";
+					? "h/l source  j/k select  / filter  Space cycle"
+					: "j/k select  / filter  Space cycle";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1268,9 +1350,9 @@ export class SkillControlPanel implements Component {
 		for (const row of previewRows) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help =
-			width >= 66
-				? "↑↓/PgUp/PgDn scroll   ? guide   Ctrl+S apply   Enter/Esc back"
-				: "↑↓ scroll   ? guide   Esc back";
+			width >= 76
+				? "j/k/PgUp/PgDn scroll  / filter  ? guide  Ctrl+S apply  Enter/Esc back"
+				: "j/k scroll  / filter  Esc back";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;

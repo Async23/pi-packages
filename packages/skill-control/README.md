@@ -28,14 +28,15 @@ Run:
 
 The inspector lists the Skills Pi discovered for the current session, groups them by their actual source, and previews each `SKILL.md` with theme-aware YAML frontmatter and Markdown highlighting. The selected file path remains visible in both wide and narrow layouts.
 
-- Up/Down selects a Skill or scrolls the focused preview.
-- Left/Right switches between source filters that actually contain discovered Skills.
+- Up/Down or `j`/`k` selects a Skill or scrolls the focused preview when filter input is inactive.
+- Left/Right or `h`/`l` switches between source filters that actually contain discovered Skills when filter input is inactive.
 - Tab switches between the Skill list and preview on wide terminals.
-- Typing ranks exact, close, and fuzzy Skill-name matches first. Descriptions, sources, and paths match contiguous text only; Backspace edits the filter.
+- `/` enters filter input from either pane. Typing ranks exact, close, and fuzzy Skill-name matches first; descriptions, sources, and paths match contiguous text only.
+- While filter input is active, all printable characters—including `h`, `j`, `k`, `l`, Space, and `?`—edit the query. Up/Down navigates results, Backspace deletes, Enter keeps the filter, and Escape cancels the edit and restores the previous filter.
+- Outside filter input, Escape returns from the narrow Preview first, then clears a kept filter before closing the inspector. Pending access changes still require explicit discard confirmation.
 - Space cycles the selected Skill's access while the Skill list is focused.
 - `?` opens a read-only guide to the four access states.
 - Ctrl+S writes and applies all pending changes; no Pi reload is needed.
-- Escape closes the inspector. Pending changes require explicit discard confirmation.
 
 ### Access states
 
