@@ -32,7 +32,6 @@ import {
 	resolveSkillAccess,
 	resolveUserAccess,
 	skillAccessState,
-	type PolicyScope,
 	type SkillAccess,
 	type SkillAccessState,
 	type SkillOverrides,
@@ -76,7 +75,6 @@ interface SkillListItem {
 	sourceLabel: string;
 	content: string;
 	defaultAccess: SkillAccess;
-	sourceScope: "user" | "project" | "temporary";
 }
 
 interface ListGroupRow {
@@ -290,37 +288,6 @@ export function accessStateLabel(state: SkillAccessState): string {
 	}
 }
 
-function accessSourceLabel(source: PolicyScope | "default"): string {
-	if (source === "project") return "This project";
-	if (source === "global") return "All projects";
-	return "Skill default";
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatCount(count: number): string {
-	if (count < 1000) return String(count);
-	if (count < 1_000_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}k`;
-	return `${(count / 1_000_000).toFixed(1)}m`;
-}
-
-function estimateTokens(content: string): number {
-	let tokens = 0;
-	for (const character of content) {
-		tokens += (character.codePointAt(0) ?? 0) <= 127 ? 0.25 : 1;
-	}
-	return Math.ceil(tokens);
-}
-
-function lineCount(content: string): number {
-	if (content.length === 0) return 0;
-	return content.replace(/\r\n/g, "\n").split("\n").length;
-}
-
 function readSkillContent(filePath: string): string {
 	try {
 		return readFileSync(filePath, "utf8");
@@ -351,19 +318,13 @@ export function replaceSkillsSection(
 export function applySkillAccessToPrompt(
 	systemPrompt: string,
 	skills: readonly Skill[],
-	globalOverrides: ReadonlyMap<string, SkillAccess>,
-	projectOverrides: ReadonlyMap<string, SkillAccess>,
+	overrides: ReadonlyMap<string, SkillAccess>,
 	cwd = process.cwd(),
 ): string {
 	const originalSection = formatSkillsForPrompt([...skills]);
 	const effectiveSkills = skills.flatMap((skill) => {
 		const path = canonicalPath(skill.filePath, cwd);
-		const resolved = resolveSkillAccess(
-			path,
-			defaultSkillAccess(skill),
-			globalOverrides,
-			projectOverrides,
-		);
+		const resolved = resolveSkillAccess(path, defaultSkillAccess(skill), overrides);
 		if (!resolved.access.model) return [];
 		return [{ ...skill, disableModelInvocation: false }];
 	});
@@ -372,14 +333,8 @@ export function applySkillAccessToPrompt(
 }
 
 export type SkillControlPanelResult =
-	| { action: "apply"; globalOverrides: SkillOverrides; projectOverrides: SkillOverrides }
+	| { action: "apply"; overrides: SkillOverrides }
 	| { action: "close" };
-
-interface StateDialog {
-	path: string;
-	scope: PolicyScope;
-	selectedIndex: number;
-}
 
 export class SkillControlPanel implements Component {
 	readonly #tui: TUI;
@@ -387,11 +342,8 @@ export class SkillControlPanel implements Component {
 	readonly #keybindings: KeybindingsManager;
 	readonly #items: SkillListItem[];
 	readonly #providers: ProviderTab[];
-	readonly #initialGlobalOverrides: SkillOverrides;
-	readonly #initialProjectOverrides: SkillOverrides;
-	readonly #globalOverrides: SkillOverrides;
-	readonly #projectOverrides: SkillOverrides;
-	readonly #projectTrusted: boolean;
+	readonly #initialOverrides: SkillOverrides;
+	readonly #overrides: SkillOverrides;
 	readonly #onDone: (result: SkillControlPanelResult) => void;
 
 	#query = "";
@@ -405,7 +357,7 @@ export class SkillControlPanel implements Component {
 	#lastPreviewViewportHeight = 1;
 	#previewCache: PreviewCache | undefined;
 	#flash: { kind: FlashKind; text: string } | undefined;
-	#stateDialog: StateDialog | undefined;
+	#accessGuideOpen = false;
 	#confirmDiscard = false;
 
 	constructor(options: {
@@ -413,9 +365,7 @@ export class SkillControlPanel implements Component {
 		theme: Theme;
 		keybindings: KeybindingsManager;
 		items: SkillListItem[];
-		globalOverrides: ReadonlyMap<string, SkillAccess>;
-		projectOverrides: ReadonlyMap<string, SkillAccess>;
-		projectTrusted?: boolean;
+		overrides: ReadonlyMap<string, SkillAccess>;
 		onDone: (result: SkillControlPanelResult) => void;
 	}) {
 		this.#tui = options.tui;
@@ -425,11 +375,8 @@ export class SkillControlPanel implements Component {
 		this.#providers = PROVIDER_TABS.filter(
 			(provider) => provider.id === "all" || options.items.some((item) => provider.match(item)),
 		);
-		this.#initialGlobalOverrides = cloneOverrides(options.globalOverrides);
-		this.#initialProjectOverrides = cloneOverrides(options.projectOverrides);
-		this.#globalOverrides = cloneOverrides(options.globalOverrides);
-		this.#projectOverrides = cloneOverrides(options.projectOverrides);
-		this.#projectTrusted = options.projectTrusted ?? true;
+		this.#initialOverrides = cloneOverrides(options.overrides);
+		this.#overrides = cloneOverrides(options.overrides);
 		this.#onDone = options.onDone;
 	}
 
@@ -442,9 +389,9 @@ export class SkillControlPanel implements Component {
 			this.#lastWidth = width;
 			return this.#renderDiscardDialog(width);
 		}
-		if (this.#stateDialog) {
+		if (this.#accessGuideOpen) {
 			this.#lastWidth = width;
-			return this.#renderStateDialog(width);
+			return this.#renderAccessGuide(width);
 		}
 		const wasWide = this.#lastWidth >= WIDE_LAYOUT_MIN_WIDTH;
 		const isWide = width >= WIDE_LAYOUT_MIN_WIDTH;
@@ -463,8 +410,8 @@ export class SkillControlPanel implements Component {
 			this.#requestRender();
 			return;
 		}
-		if (this.#stateDialog) {
-			this.#handleStateDialogInput(data);
+		if (this.#accessGuideOpen) {
+			this.#handleAccessGuideInput(data);
 			this.#requestRender();
 			return;
 		}
@@ -484,6 +431,12 @@ export class SkillControlPanel implements Component {
 				this.#onDone({ action: "close" });
 				return;
 			}
+			this.#requestRender();
+			return;
+		}
+		if (data === "?") {
+			this.#accessGuideOpen = true;
+			this.#flash = undefined;
 			this.#requestRender();
 			return;
 		}
@@ -517,17 +470,11 @@ export class SkillControlPanel implements Component {
 	}
 
 	#isDirty(): boolean {
-		return (
-			!overridesEqual(this.#initialGlobalOverrides, this.#globalOverrides) ||
-			!overridesEqual(this.#initialProjectOverrides, this.#projectOverrides)
-		);
+		return !overridesEqual(this.#initialOverrides, this.#overrides);
 	}
 
 	#pendingCount(): number {
-		return (
-			changedOverrideCount(this.#initialGlobalOverrides, this.#globalOverrides) +
-			changedOverrideCount(this.#initialProjectOverrides, this.#projectOverrides)
-		);
+		return changedOverrideCount(this.#initialOverrides, this.#overrides);
 	}
 
 	#apply(): void {
@@ -537,104 +484,45 @@ export class SkillControlPanel implements Component {
 		}
 		this.#onDone({
 			action: "apply",
-			globalOverrides: cloneOverrides(this.#globalOverrides),
-			projectOverrides: cloneOverrides(this.#projectOverrides),
+			overrides: cloneOverrides(this.#overrides),
 		});
 	}
 
 	#resolutionFor(item: SkillListItem) {
-		return resolveSkillAccess(
-			item.path,
-			item.defaultAccess,
-			this.#globalOverrides,
-			this.#projectOverrides,
-		);
+		return resolveSkillAccess(item.path, item.defaultAccess, this.#overrides);
 	}
 
 	#stateFor(item: SkillListItem): SkillAccessState {
 		return skillAccessState(this.#resolutionFor(item).access);
 	}
 
-	#scopeOverrides(scope: PolicyScope): SkillOverrides {
-		return scope === "project" ? this.#projectOverrides : this.#globalOverrides;
-	}
-
-	#defaultScope(item: SkillListItem): PolicyScope {
-		if (this.#projectTrusted && item.sourceScope !== "user") return "project";
-		return "global";
-	}
-
-	#selectionFor(item: SkillListItem, scope: PolicyScope): number {
-		const explicit = this.#scopeOverrides(scope).get(item.path);
-		const inherited =
-			scope === "project"
-				? resolveSkillAccess(item.path, item.defaultAccess, this.#globalOverrides, new Map()).access
-				: item.defaultAccess;
-		const state = skillAccessState(explicit ?? inherited);
-		return Math.max(0, ACCESS_STATE_ORDER.indexOf(state));
-	}
-
-	#inheritedStateFor(item: SkillListItem, scope: PolicyScope): SkillAccessState {
-		if (scope === "global") return skillAccessState(item.defaultAccess);
-		return skillAccessState(
-			resolveSkillAccess(item.path, item.defaultAccess, this.#globalOverrides, new Map()).access,
-		);
-	}
-
-	#openStateDialog(): void {
+	#cycleCurrentItem(): void {
 		const item = this.#currentItem();
 		if (!item) return;
-		const scope = this.#defaultScope(item);
-		this.#stateDialog = {
-			path: item.path,
-			scope,
-			selectedIndex: this.#selectionFor(item, scope),
+		const currentState = this.#stateFor(item);
+		const currentIndex = ACCESS_STATE_ORDER.indexOf(currentState);
+		const nextState = ACCESS_STATE_ORDER[(currentIndex + 1) % ACCESS_STATE_ORDER.length] ?? "both";
+		const nextAccess = accessForState(nextState);
+		const usesDefault =
+			nextAccess.model === item.defaultAccess.model && nextAccess.user === item.defaultAccess.user;
+		if (usesDefault) {
+			this.#overrides.delete(item.path);
+		} else {
+			this.#overrides.set(item.path, nextAccess);
+		}
+		const pending = this.#pendingCount();
+		const target = `${accessStateLabel(nextState)}${usesDefault ? " (default)" : ""}`;
+		const pendingText = pending > 0 ? `Pending ${pending}` : "No pending changes";
+		this.#flash = {
+			kind: pending > 0 ? "warning" : "success",
+			text: `${accessStateLabel(currentState)} → ${target} · ${pendingText}`,
 		};
-		this.#flash = undefined;
 	}
 
-	#handleStateDialogInput(data: string): void {
-		const dialog = this.#stateDialog;
-		if (!dialog) return;
-		const item = this.#items.find((candidate) => candidate.path === dialog.path);
-		if (!item) {
-			this.#stateDialog = undefined;
-			return;
+	#handleAccessGuideInput(data: string): void {
+		if (data === "?" || this.#keybindings.matches(data, "tui.select.cancel")) {
+			this.#accessGuideOpen = false;
 		}
-
-		if (this.#keybindings.matches(data, "tui.select.cancel")) {
-			this.#stateDialog = undefined;
-			return;
-		}
-		if (matchesKey(data, Key.tab)) {
-			if (!this.#projectTrusted) {
-				this.#flash = { kind: "warning", text: "This project access requires a trusted project" };
-				return;
-			}
-			dialog.scope = dialog.scope === "global" ? "project" : "global";
-			dialog.selectedIndex = this.#selectionFor(item, dialog.scope);
-			return;
-		}
-		if (this.#keybindings.matches(data, "tui.select.up")) {
-			dialog.selectedIndex = (dialog.selectedIndex + ACCESS_STATE_ORDER.length) % (ACCESS_STATE_ORDER.length + 1);
-			return;
-		}
-		if (this.#keybindings.matches(data, "tui.select.down")) {
-			dialog.selectedIndex = (dialog.selectedIndex + 1) % (ACCESS_STATE_ORDER.length + 1);
-			return;
-		}
-		if (!this.#keybindings.matches(data, "tui.select.confirm")) return;
-
-		const overrides = this.#scopeOverrides(dialog.scope);
-		if (dialog.selectedIndex === ACCESS_STATE_ORDER.length) {
-			overrides.delete(item.path);
-		} else {
-			const state = ACCESS_STATE_ORDER[dialog.selectedIndex];
-			if (state) overrides.set(item.path, accessForState(state));
-		}
-		this.#stateDialog = undefined;
-		const pending = this.#pendingCount();
-		this.#flash = pending > 0 ? { kind: "warning", text: `Pending ${pending}` } : { kind: "success", text: "No pending changes" };
 	}
 
 	#handleDiscardInput(data: string): void {
@@ -651,43 +539,16 @@ export class SkillControlPanel implements Component {
 		}
 	}
 
-	#renderStateDialog(width: number): string[] {
+	#renderAccessGuide(width: number): string[] {
 		if (width < 4) return [truncateToWidth("Skill access", width, "")];
 		const innerWidth = width - 2;
-		const dialog = this.#stateDialog;
-		const item = dialog ? this.#items.find((candidate) => candidate.path === dialog.path) : undefined;
-		if (!dialog || !item) return [truncateToWidth("Skill access", width, "")];
-
-		const scopeText = [
-			dialog.scope === "global"
-				? this.#theme.fg("accent", this.#theme.bold("[All projects]"))
-				: this.#theme.fg("muted", "All projects"),
-			dialog.scope === "project"
-				? this.#theme.fg("accent", this.#theme.bold("[This project]"))
-				: this.#theme.fg("muted", "This project"),
-		].join("  ");
-		const explicitAccess = this.#scopeOverrides(dialog.scope).get(item.path);
-		const inheritedState = this.#inheritedStateFor(item, dialog.scope);
-		const currentState = explicitAccess ? skillAccessState(explicitAccess) : inheritedState;
-		const currentSource = explicitAccess
-			? dialog.scope === "global"
-				? "saved for All projects"
-				: "saved for This project"
-			: dialog.scope === "project" && this.#globalOverrides.has(item.path)
-				? "from All projects"
-				: "from Skill default";
-		const lines = this.#topBorder(width, "Who can use this Skill?");
-		lines.push(this.#fullLine(this.#theme.fg("accent", this.#theme.bold(item.name)), innerWidth));
-		lines.push(this.#fullLine(`${this.#theme.fg("muted", "Save for")}  ${scopeText}`, innerWidth));
-		lines.push(
-			this.#fullLine(
-				`${this.#theme.fg("muted", "Current")}  ${this.#theme.fg("text", accessStateLabel(currentState))}${this.#theme.fg(
-					"dim",
-					` · ${currentSource}`,
-				)}`,
-				innerWidth,
-			),
-		);
+		const lines = this.#topBorder(width, "Skill access guide");
+		for (const line of wrapTextWithAnsi(
+			this.#theme.fg("muted", "Model visibility and direct /skill access are controlled independently."),
+			Math.max(1, innerWidth - 2),
+		)) {
+			lines.push(this.#fullLine(line, innerWidth));
+		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		lines.push(
 			this.#fullLine(
@@ -703,36 +564,17 @@ export class SkillControlPanel implements Component {
 		for (let index = 0; index < ACCESS_STATE_ORDER.length; index++) {
 			const state = ACCESS_STATE_ORDER[index];
 			if (!state) continue;
-			const selected = dialog.selectedIndex === index;
 			const icon = this.#stateIcon(state);
-			const label = this.#theme.fg(selected ? "accent" : "text", accessStateLabel(state));
+			const label = this.#theme.fg("text", accessStateLabel(state));
 			const access = accessForState(state);
 			const permissions = this.#accessColumns(
 				this.#theme.fg(access.model ? "accent" : "dim", access.model ? "✓" : "—"),
 				this.#theme.fg(access.user ? "warning" : "dim", access.user ? "✓" : "—"),
 			);
-			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, permissions, innerWidth - 2), innerWidth, selected));
+			lines.push(this.#fullLine(this.#joined(`${icon}  ${label}`, permissions, innerWidth - 2), innerWidth));
 		}
-		const resetSelected = dialog.selectedIndex === ACCESS_STATE_ORDER.length;
-		const inheritedSource =
-			dialog.scope === "project" && this.#globalOverrides.has(item.path)
-				? "Use All projects setting"
-				: "Use Skill default";
-		lines.push(
-			this.#fullLine(
-				this.#joined(
-					`${this.#theme.fg("muted", "↩")}  ${this.#theme.fg(resetSelected ? "accent" : "text", "Use inherited access")}`,
-					this.#theme.fg("dim", inheritedSource),
-					innerWidth - 2,
-				),
-				innerWidth,
-				resetSelected,
-			),
-		);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
-		const help = this.#projectTrusted
-			? "↑↓ select   Tab change scope   Enter choose   Esc cancel"
-			: "↑↓ select   Enter choose   Esc cancel";
+		const help = width >= 66 ? "Space cycles these states in the Skills list   Esc close" : "Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -781,11 +623,14 @@ export class SkillControlPanel implements Component {
 		const providerItems = this.#providerItems();
 		const normalizedQuery = this.#query.trim().toLowerCase();
 		if (!normalizedQuery) return providerItems;
-		return providerItems.filter((item) =>
-			[item.name, item.label, item.description, item.sourceLabel, item.path].some((value) =>
-				fuzzyMatch(value, normalizedQuery),
-			),
-		);
+		return providerItems
+			.map((item, index) => ({ item, index, score: skillSearchScore(item, normalizedQuery) }))
+			.filter(
+				(entry): entry is { item: SkillListItem; index: number; score: number } =>
+					entry.score !== undefined,
+			)
+			.sort((left, right) => right.score - left.score || left.index - right.index)
+			.map((entry) => entry.item);
 	}
 
 	#currentItem(): SkillListItem | undefined {
@@ -810,10 +655,6 @@ export class SkillControlPanel implements Component {
 		this.#flash = undefined;
 	}
 
-	#toggleCurrentItem(): void {
-		this.#openStateDialog();
-	}
-
 	#handleListInput(data: string, wide: boolean): void {
 		const items = this.#filteredItems();
 		if (this.#keybindings.matches(data, "tui.select.up")) {
@@ -829,11 +670,11 @@ export class SkillControlPanel implements Component {
 		} else if (matchesKey(data, Key.end)) {
 			this.#setSelection(items.length - 1);
 		} else if (data === " ") {
-			this.#toggleCurrentItem();
-		} else if (this.#keybindings.matches(data, "tui.select.confirm")) {
+			this.#cycleCurrentItem();
+		} else if (!wide && this.#keybindings.matches(data, "tui.select.confirm")) {
 			if (this.#currentItem()) {
 				this.#focus = "preview";
-				if (!wide) this.#narrowView = "preview";
+				this.#narrowView = "preview";
 			}
 			this.#flash = undefined;
 		} else if (matchesKey(data, Key.backspace)) {
@@ -865,8 +706,6 @@ export class SkillControlPanel implements Component {
 			this.#previewOffset = 0;
 		} else if (matchesKey(data, Key.end)) {
 			this.#previewOffset = Math.max(0, this.#lastPreviewLineCount - this.#lastPreviewViewportHeight);
-		} else if (data === " ") {
-			this.#toggleCurrentItem();
 		} else if (!wide && this.#keybindings.matches(data, "tui.select.confirm")) {
 			this.#narrowView = "list";
 			this.#focus = "list";
@@ -1183,17 +1022,18 @@ export class SkillControlPanel implements Component {
 
 			const selected = row.itemIndex === this.#selectedIndex;
 			const state = this.#stateFor(row.item);
+			const customized = this.#resolutionFor(row.item).source === "override";
 			const icon = this.#stateIcon(state);
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
 				: state === "neither"
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
-			const badge = this.#theme.fg(
-				state === "neither" ? "dim" : state === "user" ? "warning" : "muted",
-				accessStateLabel(state),
-			);
-			const content = this.#joined(`${icon}  ${label}`, badge, Math.max(0, width - 2));
+			const left = `${icon}  ${label}`;
+			const contentWidth = Math.max(0, width - 2);
+			const content = customized
+				? this.#joined(left, this.#theme.fg("muted", "Non-default"), contentWidth)
+				: truncateToWidth(left, contentWidth, "…");
 			return this.#paneContent(content, width, selected && focused);
 		});
 		while (rendered.length < height) rendered.push(" ".repeat(width));
@@ -1211,42 +1051,70 @@ export class SkillControlPanel implements Component {
 		}
 
 		const lines: string[] = [];
+		let inFrontmatter = false;
 		let inCodeFence = false;
-		for (const sourceLine of item.content.replace(/\r\n/g, "\n").split("\n")) {
+		for (const [index, sourceLine] of item.content.replace(/\r\n/g, "\n").split("\n").entries()) {
 			const expanded = sourceLine.replace(/\t/g, "    ");
+			const startsFrontmatter = index === 0 && /^\uFEFF?---\s*$/.test(expanded);
+			const endsFrontmatter = inFrontmatter && /^(?:---|\.\.\.)\s*$/.test(expanded);
 			const isFence = /^\s*```/.test(expanded);
 			let styled = expanded;
-			if (inCodeFence || isFence) styled = this.#theme.fg("mdCodeBlock", expanded);
+			if (startsFrontmatter || endsFrontmatter) {
+				styled = this.#theme.fg("syntaxPunctuation", expanded);
+				inFrontmatter = startsFrontmatter;
+			} else if (inFrontmatter) styled = this.#styleYamlFrontmatterLine(expanded);
+			else if (inCodeFence || isFence) styled = this.#theme.fg("mdCodeBlock", expanded);
 			else if (/^#{1,6}\s/.test(expanded)) styled = this.#theme.fg("mdHeading", this.#theme.bold(expanded));
 			else if (/^\s*>/.test(expanded)) styled = this.#theme.fg("mdQuote", expanded);
 			else styled = this.#theme.fg("text", expanded);
 
 			const wrapped = expanded.length === 0 ? [""] : wrapTextWithAnsi(styled, contentWidth);
 			lines.push(...wrapped);
-			if (isFence) inCodeFence = !inCodeFence;
+			if (isFence && !inFrontmatter && !startsFrontmatter && !endsFrontmatter) inCodeFence = !inCodeFence;
 		}
 		this.#previewCache = { path: item.path, width: contentWidth, lines };
 		return lines;
 	}
 
-	#previewMetadata(item: SkillListItem, width: number): string[] {
-		const bytes = new TextEncoder().encode(item.content).length;
-		const metadata = `${lineCount(item.content)} lines · ${formatBytes(bytes)} · ~${formatCount(estimateTokens(item.content))} tokens`;
-		const name = truncateToWidth(item.name, Math.max(1, width - 2), "…");
-		const description = truncateToWidth(item.description, Math.max(1, width - 2), "…");
-		const resolution = this.#resolutionFor(item);
-		const state = skillAccessState(resolution.access);
-		const sourceLine = truncateToWidth(
-			`${item.sourceLabel} · ${accessStateLabel(state)} · ${accessSourceLabel(resolution.source)}`,
-			Math.max(1, width - 2),
-			"…",
-		);
-		return [
-			this.#paneContent(this.#theme.fg("accent", this.#theme.bold(name)), width),
-			this.#paneContent(this.#theme.fg("muted", sourceLine), width),
-			this.#paneContent(this.#theme.fg("dim", description), width),
-			this.#paneContent(this.#theme.fg("dim", metadata), width),
-		];
+	#styleYamlFrontmatterLine(line: string): string {
+		const comment = line.match(/^(\s*)(#.*)$/);
+		if (comment) return `${comment[1]}${this.#theme.fg("syntaxComment", comment[2] ?? "")}`;
+
+		const mapping = line.match(/^(\s*)(-\s+)?([A-Za-z0-9_.-]+)(\s*):(\s*)(.*)$/);
+		if (mapping) {
+			const [, indent = "", listMarker = "", key = "", beforeColon = "", afterColon = "", value = ""] = mapping;
+			return `${indent}${
+				listMarker ? this.#theme.fg("syntaxPunctuation", listMarker) : ""
+			}${this.#theme.fg("syntaxVariable", key)}${beforeColon}${this.#theme.fg(
+				"syntaxPunctuation",
+				":",
+			)}${afterColon}${this.#styleYamlScalar(value)}`;
+		}
+
+		const sequence = line.match(/^(\s*)(-\s+)(.*)$/);
+		if (sequence) {
+			return `${sequence[1]}${this.#theme.fg("syntaxPunctuation", sequence[2] ?? "")}${this.#styleYamlScalar(
+				sequence[3] ?? "",
+			)}`;
+		}
+
+		const scalar = line.match(/^(\s*)(.*)$/);
+		return `${scalar?.[1] ?? ""}${this.#styleYamlScalar(scalar?.[2] ?? "")}`;
+	}
+
+	#styleYamlScalar(value: string): string {
+		if (value.length === 0) return "";
+		if (/^#/.test(value)) return this.#theme.fg("syntaxComment", value);
+		if (/^(?:true|false|null|~)$/i.test(value)) return this.#theme.fg("syntaxKeyword", value);
+		if (/^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
+			return this.#theme.fg("syntaxNumber", value);
+		}
+		if (/^[>|][+-]?\d?$/.test(value)) return this.#theme.fg("syntaxOperator", value);
+		return this.#theme.fg("syntaxString", value);
+	}
+
+	#previewPath(item: SkillListItem, width: number): string {
+		return this.#paneContent(this.#theme.fg("muted", item.label), width);
 	}
 
 	#renderPreviewRows(width: number, height: number): string[] {
@@ -1259,9 +1127,8 @@ export class SkillControlPanel implements Component {
 			];
 		}
 
-		const metadata = this.#previewMetadata(item, width);
-		const spacerCount = height >= 10 ? 2 : height >= 8 ? 1 : 0;
-		const previewHeight = Math.max(1, height - metadata.length - 1 - spacerCount);
+		const path = this.#previewPath(item, width);
+		const previewHeight = Math.max(1, height - 1);
 		const contentWidth = Math.max(1, width - 2);
 		const previewLines = this.#previewLines(item, contentWidth);
 		this.#lastPreviewLineCount = previewLines.length;
@@ -1271,23 +1138,6 @@ export class SkillControlPanel implements Component {
 			Math.min(this.#previewOffset, Math.max(0, previewLines.length - previewHeight)),
 		);
 
-		const position =
-			previewLines.length === 0
-				? ""
-				: ` · View ${this.#previewOffset + 1}–${Math.min(this.#previewOffset + previewHeight, previewLines.length)} of ${previewLines.length} wrapped rows`;
-		const dividerWidth = Math.max(0, width - 2);
-		const dividerPrefix = this.#theme.fg("borderMuted", "─ ");
-		const dividerTitle = this.#theme.fg("accent", this.#theme.bold("SKILL.md"));
-		const dividerPosition = this.#theme.fg("dim", position);
-		const dividerLabel = truncateToWidth(
-			`${dividerPrefix}${dividerTitle}${dividerPosition}${this.#theme.fg("borderMuted", " ")}`,
-			dividerWidth,
-			"…",
-		);
-		const separator = this.#paneContent(
-			`${dividerLabel}${this.#theme.fg("borderMuted", "─".repeat(Math.max(0, dividerWidth - visibleWidth(dividerLabel))))}`,
-			width,
-		);
 		const content =
 			previewLines.length === 0
 				? [this.#paneContent(this.#theme.fg("warning", "This skill file is empty or unreadable."), width)]
@@ -1295,10 +1145,7 @@ export class SkillControlPanel implements Component {
 						.slice(this.#previewOffset, this.#previewOffset + previewHeight)
 						.map((line) => this.#paneContent(line, width));
 
-		const spacer = this.#paneContent("", width);
-		const beforeDivider = spacerCount >= 1 ? [spacer] : [];
-		const afterDivider = spacerCount >= 2 ? [spacer] : [];
-		const rows = [...metadata, ...beforeDivider, separator, ...afterDivider, ...content];
+		const rows = [path, ...content];
 		while (rows.length < height) rows.push(" ".repeat(width));
 		return rows.slice(0, height);
 	}
@@ -1355,7 +1202,10 @@ export class SkillControlPanel implements Component {
 				"┴",
 			)}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`,
 		);
-		const help = "←/→ source   ↑↓ select/scroll   Tab pane   Space access   Ctrl+S apply   Esc close";
+		const help =
+			this.#focus === "list"
+				? "↑↓ select   Type search   Space cycle   ? guide   Tab Preview   ←/→ source   Ctrl+S apply   Esc close"
+				: "↑↓/PgUp/PgDn scroll   ? guide   Tab Skills   ←/→ source   Ctrl+S apply   Esc close";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1381,7 +1231,7 @@ export class SkillControlPanel implements Component {
 		lines.push(
 			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
 		);
-		const chromeAfterContent = 5; // selected path + status + separators + help + bottom
+		const chromeAfterContent = 5; // selected path + separators + help + bottom
 		const contentHeight = Math.max(
 			3,
 			Math.min(16, this.#preferredOverlayHeight() - lines.length - chromeAfterContent),
@@ -1391,27 +1241,17 @@ export class SkillControlPanel implements Component {
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const selected = this.#currentItem();
 		if (selected) {
-			const resolution = this.#resolutionFor(selected);
-			const state = skillAccessState(resolution.access);
 			lines.push(this.#fullLine(this.#theme.fg("text", selected.label), innerWidth));
-			lines.push(
-				this.#fullLine(
-					this.#theme.fg(
-						state === "neither" ? "warning" : "muted",
-						`${selected.sourceLabel} · ${accessStateLabel(state)} · ${accessSourceLabel(resolution.source)}`,
-					),
-					innerWidth,
-				),
-			);
 		} else {
 			lines.push(this.#fullLine(this.#theme.fg("dim", "Edit search to select a skill."), innerWidth));
-			lines.push(this.#fullLine("", innerWidth));
 		}
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help =
-			width >= 66
-				? "←/→ source   ↑↓ select   Enter preview   Space access   Ctrl+S apply"
-				: "←/→ source   ↑↓ select   Space access";
+			width >= 74
+				? "←/→ source  ↑↓ select  Enter preview  Space cycle  ? guide  Ctrl+S apply"
+				: width >= 56
+					? "←/→ source  ↑↓ select  Space cycle  ? guide"
+					: "↑↓ select  Space cycle  ? guide";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1428,9 +1268,9 @@ export class SkillControlPanel implements Component {
 		for (const row of previewRows) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(this.#border("├", "─", "┤", innerWidth));
 		const help =
-			width >= 62
-				? "↑↓/PgUp/PgDn scroll   Space access   Ctrl+S apply   Enter/Esc back"
-				: "↑↓ scroll   Space access   Esc back";
+			width >= 66
+				? "↑↓/PgUp/PgDn scroll   ? guide   Ctrl+S apply   Enter/Esc back"
+				: "↑↓ scroll   ? guide   Esc back";
 		lines.push(this.#fullLine(this.#helpWithFlash(help, Math.max(0, innerWidth - 2)), innerWidth));
 		lines.push(this.#border("╰", "─", "╯", innerWidth));
 		return lines;
@@ -1453,7 +1293,6 @@ function toListItems(skills: readonly Skill[], cwd: string, agentDir: string): S
 				sourceLabel: source.label,
 				content: readSkillContent(skill.filePath),
 				defaultAccess: defaultSkillAccess(skill),
-				sourceScope: skill.sourceInfo.scope,
 			};
 		})
 		.sort((left, right) => {
@@ -1470,6 +1309,101 @@ export function parseSkillCommand(text: string): string | undefined {
 	return match?.[1];
 }
 
+function contiguousMatchScore(value: string, query: string, baseScore: number): number | undefined {
+	const index = value.toLowerCase().indexOf(query);
+	if (index < 0) return undefined;
+	return baseScore - Math.min(index, 100);
+}
+
+function compactName(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function editDistance(left: string, right: string): number {
+	let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+	for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+		const current = [leftIndex];
+		for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+			const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+			current[rightIndex] = Math.min(
+				(current[rightIndex - 1] ?? 0) + 1,
+				(previous[rightIndex] ?? 0) + 1,
+				(previous[rightIndex - 1] ?? 0) + substitutionCost,
+			);
+		}
+		previous = current;
+	}
+	return previous[right.length] ?? right.length;
+}
+
+function approximateNameScore(value: string, query: string): number | undefined {
+	if (query.length < 4 || value.length === 0) return undefined;
+	const maxDistance = query.length >= 9 ? 2 : 1;
+	const minLength = Math.max(1, query.length - maxDistance);
+	const maxLength = Math.min(value.length, query.length + maxDistance);
+	let bestScore: number | undefined;
+
+	for (let start = 0; start < value.length; start++) {
+		for (let length = minLength; length <= maxLength && start + length <= value.length; length++) {
+			const distance = editDistance(query, value.slice(start, start + length));
+			if (distance > maxDistance) continue;
+			const score =
+				700 - distance * 80 - Math.min(start, 50) * 2 - Math.abs(length - query.length) * 20;
+			bestScore = Math.max(bestScore ?? Number.NEGATIVE_INFINITY, score);
+		}
+	}
+	return bestScore;
+}
+
+function fuzzyNameScore(value: string, query: string): number | undefined {
+	const haystack = value.toLowerCase();
+	if (haystack === query) return 1000;
+	if (haystack.startsWith(query)) return 950 - Math.min(haystack.length - query.length, 50);
+	const contiguousIndex = haystack.indexOf(query);
+	if (contiguousIndex >= 0) return 900 - Math.min(contiguousIndex, 100);
+
+	const compactHaystack = compactName(haystack);
+	const compactQuery = compactName(query);
+	if (compactQuery) {
+		if (compactHaystack === compactQuery) return 880;
+		if (compactHaystack.startsWith(compactQuery)) return 850 - Math.min(compactHaystack.length - compactQuery.length, 50);
+		const compactIndex = compactHaystack.indexOf(compactQuery);
+		if (compactIndex >= 0) return 820 - Math.min(compactIndex, 100);
+		const approximateScore = approximateNameScore(compactHaystack, compactQuery);
+		if (approximateScore !== undefined) return approximateScore;
+	}
+
+	let queryIndex = 0;
+	let previousMatch = -1;
+	let score = 420;
+	for (let index = 0; index < haystack.length; index++) {
+		if (haystack[index] !== query[queryIndex]) continue;
+		score += 10;
+		if (previousMatch >= 0) {
+			const gap = index - previousMatch - 1;
+			score += gap === 0 ? 20 : -Math.min(20, gap * 3);
+		}
+		if (index === 0 || /[-_./\s]/.test(haystack[index - 1] ?? "")) score += 15;
+		previousMatch = index;
+		queryIndex += 1;
+		if (queryIndex === query.length) {
+			return score - Math.min(80, haystack.length - query.length);
+		}
+	}
+	return undefined;
+}
+
+function skillSearchScore(item: SkillListItem, query: string): number | undefined {
+	const scores = [
+		fuzzyNameScore(item.name, query),
+		contiguousMatchScore(item.description, query, 300),
+		contiguousMatchScore(item.sourceLabel, query, 260),
+		contiguousMatchScore(item.label, query, 240),
+		contiguousMatchScore(item.path, query, 220),
+	].filter((score): score is number => score !== undefined);
+	return scores.length > 0 ? Math.max(...scores) : undefined;
+}
+
 function fuzzyMatch(value: string, query: string): boolean {
 	const haystack = value.toLowerCase();
 	const needle = query.toLowerCase();
@@ -1482,31 +1416,24 @@ function fuzzyMatch(value: string, query: string): boolean {
 }
 
 export default function skillControlExtension(pi: ExtensionAPI) {
-	const globalConfigPath = join(getAgentDir(), CONFIG_FILE_NAME);
-	const globalOverrides: SkillOverrides = new Map();
-	const projectOverrides: SkillOverrides = new Map();
+	const configPath = join(getAgentDir(), CONFIG_FILE_NAME);
+	const overrides: SkillOverrides = new Map();
 	let currentCwd = process.cwd();
-	let projectConfigPath = join(currentCwd, ".pi", CONFIG_FILE_NAME);
 	let configError: string | undefined;
 	let autocompleteInstalled = false;
 	let promptMismatchWarningShown = false;
 
-	const loadPolicies = (cwd: string, projectTrusted: boolean) => {
-		const global = readPolicyConfig(globalConfigPath);
+	const loadPolicy = (cwd: string) => {
+		const policy = readPolicyConfig(configPath);
 		currentCwd = cwd;
-		projectConfigPath = join(cwd, ".pi", CONFIG_FILE_NAME);
-		const project: ReturnType<typeof readPolicyConfig> = projectTrusted
-			? readPolicyConfig(projectConfigPath)
-			: { overrides: new Map(), migrated: false };
-		replaceOverrides(globalOverrides, global.overrides);
-		replaceOverrides(projectOverrides, project.overrides);
-		configError = global.error ?? project.error;
+		replaceOverrides(overrides, policy.overrides);
+		configError = policy.error;
 	};
 
-	loadPolicies(process.cwd(), false);
+	loadPolicy(process.cwd());
 
 	pi.on("session_start", (_event, ctx) => {
-		loadPolicies(ctx.cwd, ctx.isProjectTrusted());
+		loadPolicy(ctx.cwd);
 		if (configError) ctx.ui.notify(configError, "error");
 		if (autocompleteInstalled || ctx.mode !== "tui") return;
 		autocompleteInstalled = true;
@@ -1521,7 +1448,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 				const skillCommands = pi.getCommands().filter((command) => command.source === "skill");
 				const allowedCommands = skillCommands.filter((command) => {
 					const path = canonicalPath(command.sourceInfo.path, currentCwd);
-					return resolveUserAccess(path, globalOverrides, projectOverrides);
+					return resolveUserAccess(path, overrides);
 				});
 				const blockedNames = new Set(
 					skillCommands
@@ -1571,9 +1498,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 						theme,
 						keybindings,
 						items,
-						globalOverrides,
-						projectOverrides,
-						projectTrusted: ctx.isProjectTrusted(),
+						overrides,
 						onDone: done,
 					}),
 				{
@@ -1589,16 +1514,11 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 			);
 			if (result.action !== "apply") return;
 
-			const globalChanged = !overridesEqual(globalOverrides, result.globalOverrides);
-			const projectChanged = !overridesEqual(projectOverrides, result.projectOverrides);
-			const changeCount =
-				changedOverrideCount(globalOverrides, result.globalOverrides) +
-				changedOverrideCount(projectOverrides, result.projectOverrides);
+			const changed = !overridesEqual(overrides, result.overrides);
+			const changeCount = changedOverrideCount(overrides, result.overrides);
 			try {
-				if (globalChanged) writePolicyConfig(globalConfigPath, result.globalOverrides);
-				if (projectChanged) writePolicyConfig(projectConfigPath, result.projectOverrides);
-				replaceOverrides(globalOverrides, result.globalOverrides);
-				replaceOverrides(projectOverrides, result.projectOverrides);
+				if (changed) writePolicyConfig(configPath, result.overrides);
+				replaceOverrides(overrides, result.overrides);
 				configError = undefined;
 				ctx.ui.notify(`Applied ${changeCount} Skill ${changeCount === 1 ? "change" : "changes"}`, "info");
 			} catch {
@@ -1609,26 +1529,15 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (globalOverrides.size === 0 && projectOverrides.size === 0) return;
+		if (overrides.size === 0) return;
 
 		const skills = event.systemPromptOptions.skills ?? [];
-		const filteredPrompt = applySkillAccessToPrompt(
-			event.systemPrompt,
-			skills,
-			globalOverrides,
-			projectOverrides,
-			ctx.cwd,
-		);
+		const filteredPrompt = applySkillAccessToPrompt(event.systemPrompt, skills, overrides, ctx.cwd);
 
 		if (filteredPrompt === event.systemPrompt) {
 			const modelPolicyDiffers = skills.some((skill) => {
 				const path = canonicalPath(skill.filePath, ctx.cwd);
-				const access = resolveSkillAccess(
-					path,
-					defaultSkillAccess(skill),
-					globalOverrides,
-					projectOverrides,
-				).access;
+				const access = resolveSkillAccess(path, defaultSkillAccess(skill), overrides).access;
 				return access.model !== !skill.disableModelInvocation;
 			});
 			if (modelPolicyDiffers && !promptMismatchWarningShown) {
@@ -1648,7 +1557,7 @@ export default function skillControlExtension(pi: ExtensionAPI) {
 		const command = pi.getCommands().find((candidate) => candidate.source === "skill" && candidate.name === `skill:${skillName}`);
 		if (!command) return;
 		const path = canonicalPath(command.sourceInfo.path, ctx.cwd);
-		if (resolveUserAccess(path, globalOverrides, projectOverrides)) return;
+		if (resolveUserAccess(path, overrides)) return;
 		ctx.ui.notify(`Skill '${skillName}' isn't available through /skill. Use /skills to change access.`, "warning");
 		return { action: "handled" };
 	});

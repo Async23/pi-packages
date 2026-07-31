@@ -5,7 +5,6 @@ import { dirname, normalize, resolve } from "node:path";
 export const CONFIG_VERSION = 3;
 export const CONFIG_FILE_NAME = "skill-control.json";
 
-export type PolicyScope = "global" | "project";
 export type SkillAccessState = "both" | "model" | "user" | "neither";
 
 export interface SkillAccess {
@@ -15,7 +14,7 @@ export interface SkillAccess {
 
 export interface SkillAccessResolution {
 	access: SkillAccess;
-	source: PolicyScope | "default";
+	source: "override" | "default";
 }
 
 export type SkillOverrides = Map<string, SkillAccess>;
@@ -107,22 +106,15 @@ export function defaultSkillAccess(skill: Pick<Skill, "disableModelInvocation">)
 export function resolveSkillAccess(
 	path: string,
 	defaultAccess: SkillAccess,
-	globalOverrides: ReadonlyMap<string, SkillAccess>,
-	projectOverrides: ReadonlyMap<string, SkillAccess>,
+	overrides: ReadonlyMap<string, SkillAccess>,
 ): SkillAccessResolution {
-	const project = projectOverrides.get(path);
-	if (project) return { access: cloneAccess(project), source: "project" };
-	const global = globalOverrides.get(path);
-	if (global) return { access: cloneAccess(global), source: "global" };
+	const override = overrides.get(path);
+	if (override) return { access: cloneAccess(override), source: "override" };
 	return { access: cloneAccess(defaultAccess), source: "default" };
 }
 
-export function resolveUserAccess(
-	path: string,
-	globalOverrides: ReadonlyMap<string, SkillAccess>,
-	projectOverrides: ReadonlyMap<string, SkillAccess>,
-): boolean {
-	return resolveSkillAccess(path, { model: true, user: true }, globalOverrides, projectOverrides).access.user;
+export function resolveUserAccess(path: string, overrides: ReadonlyMap<string, SkillAccess>): boolean {
+	return resolveSkillAccess(path, { model: true, user: true }, overrides).access.user;
 }
 
 export function overridesEqual(

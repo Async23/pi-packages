@@ -71,12 +71,12 @@ test("model policy can hide normal skills and expose user-only Skill defaults", 
 	const userOnly = makeSkill("user-only", { disableModelInvocation: true });
 	const skills = [alpha, userOnly];
 	const prompt = `prefix${formatSkillsForPrompt(skills)}\nCurrent working directory: /tmp`;
-	const globalOverrides = new Map([
+	const overrides = new Map([
 		[canonicalPath(alpha.filePath), accessForState("user")],
 		[canonicalPath(userOnly.filePath), accessForState("both")],
 	]);
 
-	const effective = applySkillAccessToPrompt(prompt, skills, globalOverrides, new Map());
+	const effective = applySkillAccessToPrompt(prompt, skills, overrides);
 	assert.doesNotMatch(effective, /<name>alpha<\/name>/);
 	assert.match(effective, /<name>user-only<\/name>/);
 });
@@ -84,26 +84,20 @@ test("model policy can hide normal skills and expose user-only Skill defaults", 
 test("user-only policy changes leave the model prompt untouched", () => {
 	const skill = makeSkill("model-only");
 	const prompt = `prefix${formatSkillsForPrompt([skill])}suffix`;
-	const globalOverrides = new Map([[canonicalPath(skill.filePath), accessForState("model")]]);
-	assert.equal(applySkillAccessToPrompt(prompt, [skill], globalOverrides, new Map()), prompt);
+	const overrides = new Map([[canonicalPath(skill.filePath), accessForState("model")]]);
+	assert.equal(applySkillAccessToPrompt(prompt, [skill], overrides), prompt);
 });
 
-test("project overrides global, which overrides the Skill default", () => {
+test("a saved setting overrides the Skill default", () => {
 	const skill = makeSkill("precedence", { disableModelInvocation: true });
 	const path = canonicalPath(skill.filePath);
-	const inherited = resolveSkillAccess(path, defaultSkillAccess(skill), new Map(), new Map());
-	assert.deepEqual(inherited, { access: { model: false, user: true }, source: "default" });
+	const fromDefault = resolveSkillAccess(path, defaultSkillAccess(skill), new Map());
+	assert.deepEqual(fromDefault, { access: { model: false, user: true }, source: "default" });
 
-	const global = new Map([[path, accessForState("model")]]);
-	assert.deepEqual(resolveSkillAccess(path, defaultSkillAccess(skill), global, new Map()), {
+	const overrides = new Map([[path, accessForState("model")]]);
+	assert.deepEqual(resolveSkillAccess(path, defaultSkillAccess(skill), overrides), {
 		access: { model: true, user: false },
-		source: "global",
-	});
-
-	const project = new Map([[path, accessForState("neither")]]);
-	assert.deepEqual(resolveSkillAccess(path, defaultSkillAccess(skill), global, project), {
-		access: { model: false, user: false },
-		source: "project",
+		source: "override",
 	});
 });
 
@@ -187,29 +181,28 @@ function makePanelItem(name, sourceKind, sourceLabel, options = {}) {
 		path: `/skills/${name}/SKILL.md`,
 		name,
 		label: `/skills/${name}/SKILL.md`,
-		description: `${name} description`,
+		description: options.description ?? `${name} description`,
 		sourceKind,
 		sourceLabel,
-		content: `# ${name}\n`,
+		content: options.content ?? `# ${name}\n`,
 		defaultAccess: options.defaultAccess ?? { model: true, user: true },
-		sourceScope: options.sourceScope ?? "user",
 	};
 }
 
-function makePanel(onDone = () => undefined) {
-	const items = [
+function makePanel(onDone = () => undefined, options = {}) {
+	const items = options.items ?? [
 		makePanelItem("agents-both", "agents", "Agents (user)"),
 		makePanelItem("agents-user", "agents", "Agents (user)", {
 			defaultAccess: { model: false, user: true },
 		}),
-		makePanelItem("agents-project", "agents", "Agents (project)", { sourceScope: "project" }),
+		makePanelItem("agents-project", "agents", "Agents (project)"),
 		makePanelItem("package-skill", "package", "Package (example-pkg)"),
 		makePanelItem("settings-model", "settings", "Settings (user)"),
-		makePanelItem("cli-skill", "cli", "CLI (--skill)", { sourceScope: "temporary" }),
+		makePanelItem("cli-skill", "cli", "CLI (--skill)"),
 	];
 	return new SkillControlPanel({
 		tui: { terminal: { rows: 80 }, requestRender() {} },
-		theme: plainTheme,
+		theme: options.theme ?? plainTheme,
 		keybindings: {
 			matches: (data, action) =>
 				(action === "tui.select.up" && data === "UP") ||
@@ -218,11 +211,36 @@ function makePanel(onDone = () => undefined) {
 				(action === "tui.select.cancel" && data === "ESC"),
 		},
 		items,
-		globalOverrides: new Map([["/skills/settings-model/SKILL.md", accessForState("model")]]),
-		projectOverrides: new Map([["/skills/agents-project/SKILL.md", accessForState("neither")]]),
-		projectTrusted: true,
+		overrides: new Map([
+			["/skills/settings-model/SKILL.md", accessForState("model")],
+			["/skills/agents-project/SKILL.md", accessForState("neither")],
+		]),
 		onDone,
 	});
+}
+
+function widePane(panel, column) {
+	return panel
+		.render(120)
+		.flatMap((line) => {
+			const columns = line.split("│");
+			return columns.length >= 4 ? [columns[column]] : [];
+		})
+		.join("\n");
+}
+
+function wideList(panel) {
+	return widePane(panel, 1);
+}
+
+function widePreview(panel) {
+	return widePane(panel, 2);
+}
+
+function listLine(panel, skillName) {
+	return wideList(panel)
+		.split("\n")
+		.find((line) => line.includes(skillName));
 }
 
 test("panel presents actual discovered sources and all four states without Extra scan", () => {
@@ -233,7 +251,105 @@ test("panel presents actual discovered sources and all four states without Extra
 	assert.doesNotMatch(output, /◆|Enabled|Manual only|Disabled/);
 	assert.match(output, /Sources\s+\[ALL 6\]\s+Agents 3\s+Package 1\s+Settings 1\s+CLI 1/);
 	assert.doesNotMatch(output, /Extra scan|Claude off|Codex off/);
-	assert.match(output, /Space access\s+Ctrl\+S apply/);
+});
+
+test("wide preview shows the selected path before the Skill body without redundant metadata", () => {
+	const panel = makePanel();
+	const preview = widePreview(panel);
+
+	assert.match(preview, /\/skills\/agents-both\/SKILL\.md/);
+	assert.match(preview, /# agents-both/);
+	assert.ok(preview.indexOf("/skills/agents-both/SKILL.md") < preview.indexOf("# agents-both"));
+	assert.doesNotMatch(
+		preview,
+		/agents-both description|Access from|Agents \(user\)|Model \+ User|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/,
+	);
+});
+
+test("preview highlights YAML frontmatter with Pi syntax theme roles", () => {
+	const styled = [];
+	const theme = {
+		...plainTheme,
+		fg(color, text) {
+			styled.push({ color, text });
+			return text;
+		},
+	};
+	const item = makePanelItem("highlighted", "agents", "Agents (user)", {
+		content: `---
+name: highlighted
+description: >
+  Multi-line description.
+enabled: true
+priority: 2
+tags:
+  - docs
+# note
+---
+# highlighted
+`,
+	});
+	const panel = makePanel(() => undefined, { items: [item], theme });
+	panel.render(120);
+
+	const hasStyle = (color, text) => styled.some((entry) => entry.color === color && entry.text === text);
+	assert.equal(styled.filter((entry) => entry.color === "syntaxPunctuation" && entry.text === "---").length, 2);
+	assert.ok(hasStyle("syntaxVariable", "name"));
+	assert.ok(hasStyle("syntaxString", "highlighted"));
+	assert.ok(hasStyle("syntaxVariable", "description"));
+	assert.ok(hasStyle("syntaxOperator", ">"));
+	assert.ok(hasStyle("syntaxString", "Multi-line description."));
+	assert.ok(hasStyle("syntaxKeyword", "true"));
+	assert.ok(hasStyle("syntaxNumber", "2"));
+	assert.ok(hasStyle("syntaxPunctuation", "- "));
+	assert.ok(hasStyle("syntaxComment", "# note"));
+	assert.ok(hasStyle("mdHeading", "# highlighted"));
+});
+
+test("Skill rows mark only access that differs from the Skill default", () => {
+	const panel = makePanel();
+	const list = wideList(panel);
+
+	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.doesNotMatch(listLine(panel, "agents-user"), /Non-default/);
+	assert.match(listLine(panel, "agents-project"), /Non-default/);
+	assert.match(listLine(panel, "settings-model"), /Non-default/);
+	assert.doesNotMatch(list, /Model \+ User|Model only|User only|Neither/);
+});
+
+test("wide footer follows the focused pane", () => {
+	const panel = makePanel();
+	let output = panel.render(120).join("\n");
+
+	assert.match(output, /↑↓ select\s+Type search\s+Space cycle\s+\? guide\s+Tab Preview/);
+	assert.doesNotMatch(output, /Enter Preview/);
+	assert.doesNotMatch(output, /PgUp\/PgDn scroll|Tab Skills/);
+
+	panel.handleInput("ENTER");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Tab Preview/);
+	assert.doesNotMatch(output, /Tab Skills/);
+
+	panel.handleInput("\t");
+	output = panel.render(120).join("\n");
+
+	assert.match(output, /↑↓\/PgUp\/PgDn scroll\s+\? guide\s+Tab Skills/);
+	assert.doesNotMatch(output, /Type search|Enter Preview|Tab Preview|Space cycle/);
+});
+
+test("narrow layouts keep the selected path without repeating access metadata", () => {
+	const panel = makePanel();
+	let output = panel.render(48).join("\n");
+	assert.match(output, /\/skills\/agents-both\/SKILL\.md/);
+	assert.doesNotMatch(output, /Skill default|Saved setting/);
+
+	panel.handleInput("ENTER");
+	output = panel.render(48).join("\n");
+
+	assert.match(output, /Skill preview/);
+	assert.match(output, /\/skills\/agents-both\/SKILL\.md/);
+	assert.match(output, /# agents-both/);
+	assert.doesNotMatch(output, /agents-both description|Access from|Agents \(user\)|\d+ lines|\d+ (?:B|KB|MB)|tokens|View|wrapped rows/);
 });
 
 test("search accepts h and l instead of treating them as hidden navigation keys", () => {
@@ -246,58 +362,61 @@ test("search accepts h and l instead of treating them as hidden navigation keys"
 	assert.match(output, /cli-skill/);
 });
 
-test("Space opens a permission matrix with All projects and This project scopes", () => {
+test("Space cycles all four access states directly in the list", () => {
 	const panel = makePanel();
 	panel.render(120);
 	panel.handleInput(" ");
 	let output = panel.render(120).join("\n");
+	assert.match(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(output, /Model \+ User → Model only · Pending 1/);
 
-	assert.match(output, /Who can use this Skill\?/);
-	assert.match(output, /Save for\s+\[All projects\]\s+This project/);
-	assert.match(output, /Model\s+You \(\/skill\)/);
-	assert.match(output, /●\s+Model \+ User\s+✓\s+✓/);
-	assert.match(output, /◐\s+Model only\s+✓\s+—/);
-	assert.match(output, /◑\s+User only\s+—\s+✓/);
-	assert.match(output, /○\s+Neither\s+—\s+—/);
-	assert.match(output, /Use inherited access\s+Use Skill default/);
-
-	panel.handleInput("\t");
+	panel.handleInput(" ");
 	output = panel.render(120).join("\n");
-	assert.match(output, /All projects\s+\[This project\]/);
+	assert.match(output, /Model only → User only · Pending 1/);
+
+	panel.handleInput(" ");
+	output = panel.render(120).join("\n");
+	assert.match(output, /User only → Neither · Pending 1/);
+
+	panel.handleInput(" ");
+	output = panel.render(120).join("\n");
+	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.match(output, /Neither → Model \+ User \(default\) · No pending changes/);
 });
 
-test("scope selector shows inheritance for the scope being edited", () => {
-	const panel = makePanel();
+test("cycling to the Skill default removes the saved override", () => {
+	let result;
+	const panel = makePanel((value) => {
+		result = value;
+	});
 	panel.render(120);
-	panel.handleInput("DOWN");
-	panel.handleInput("DOWN");
+	for (let index = 0; index < 4; index++) panel.handleInput("DOWN");
+	panel.handleInput(" ");
+	panel.handleInput(" ");
 	panel.handleInput(" ");
 
-	let output = panel.render(120).join("\n");
-	assert.match(output, /\[This project\]/);
-	assert.match(output, /Current\s+Neither · saved for This project/);
+	const output = panel.render(120).join("\n");
+	assert.doesNotMatch(listLine(panel, "settings-model"), /Non-default/);
+	assert.match(output, /Neither → Model \+ User \(default\) · Pending 1/);
 
-	panel.handleInput("\t");
-	output = panel.render(120).join("\n");
-	assert.match(output, /\[All projects\]/);
-	assert.match(output, /Current\s+Model \+ User · from Skill default/);
+	panel.handleInput("\x13");
+	assert.equal(result.action, "apply");
+	assert.equal(result.overrides.has("/skills/settings-model/SKILL.md"), false);
 });
 
-test("state choices stay draft-only until Ctrl+S applies them", () => {
+test("cycled states stay draft-only until Ctrl+S applies them", () => {
 	let result;
 	const panel = makePanel((value) => {
 		result = value;
 	});
 	panel.render(120);
 	panel.handleInput(" ");
-	panel.handleInput("DOWN");
-	panel.handleInput("ENTER");
 
 	assert.equal(result, undefined);
 	assert.match(panel.render(120).join("\n"), /Pending 1/);
 	panel.handleInput("\x13");
 	assert.equal(result.action, "apply");
-	assert.deepEqual(result.globalOverrides.get("/skills/agents-both/SKILL.md"), {
+	assert.deepEqual(result.overrides.get("/skills/agents-both/SKILL.md"), {
 		model: true,
 		user: false,
 	});
@@ -310,8 +429,6 @@ test("Esc protects pending changes from accidental loss", () => {
 	});
 	panel.render(120);
 	panel.handleInput(" ");
-	panel.handleInput("DOWN");
-	panel.handleInput("ENTER");
 	panel.handleInput("ESC");
 	assert.match(panel.render(120).join("\n"), /Discard 1 pending change/);
 	panel.handleInput("n");
@@ -319,7 +436,45 @@ test("Esc protects pending changes from accidental loss", () => {
 	assert.match(panel.render(120).join("\n"), /Pending 1/);
 });
 
-test("panel wraps the compact header and dialogs within narrow terminals", () => {
+test("the access guide explains the matrix without editing controls", () => {
+	const panel = makePanel();
+	panel.render(120);
+	panel.handleInput("?");
+	let output = panel.render(120).join("\n");
+
+	assert.match(output, /Skill access guide/);
+	assert.match(output, /Model visibility and direct \/skill access are controlled independently/);
+	assert.match(output, /Model\s+You \(\/skill\)/);
+	assert.match(output, /●\s+Model \+ User\s+✓\s+✓/);
+	assert.match(output, /◐\s+Model only\s+✓\s+—/);
+	assert.match(output, /◑\s+User only\s+—\s+✓/);
+	assert.match(output, /○\s+Neither\s+—\s+—/);
+	assert.doesNotMatch(output, /Current|Use Skill default|Enter choose|Save for/);
+
+	panel.handleInput(" ");
+	output = panel.render(120).join("\n");
+	assert.match(output, /Skill access guide/);
+
+	panel.handleInput("ESC");
+	output = panel.render(120).join("\n");
+	assert.match(listLine(panel, "agents-both"), /agents-both/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+});
+
+test("Space does not change access while Preview is focused", () => {
+	const panel = makePanel();
+	panel.render(120);
+	panel.handleInput("\t");
+	panel.handleInput(" ");
+	panel.handleInput("\t");
+	const output = panel.render(120).join("\n");
+
+	assert.match(listLine(panel, "agents-both"), /agents-both/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /Non-default/);
+	assert.doesNotMatch(output, /Pending 1/);
+});
+
+test("panel wraps the compact header and guide within narrow terminals", () => {
 	const width = 48;
 	const panel = makePanel();
 	let lines = panel.render(width);
@@ -329,11 +484,11 @@ test("panel wraps the compact header and dialogs within narrow terminals", () =>
 		assert.ok(output.includes(expected), `missing narrow header content: ${expected}`);
 	}
 
-	panel.handleInput(" ");
+	panel.handleInput("?");
 	lines = panel.render(width);
 	output = lines.join("\n");
 	assert.ok(lines.every((line) => line.replace(/\x1b\[[0-9;]*m/g, "").length === width));
-	assert.match(output, /Who can use this Skill\?/);
+	assert.match(output, /Skill access guide/);
 });
 
 test("search fuzzy-matches non-contiguous name segments", () => {
@@ -358,4 +513,25 @@ test("search fuzzy-matches non-contiguous name segments", () => {
 	assert.match(output, /my-pptx-html-local/);
 	assert.doesNotMatch(output, /my-pptx-local/);
 	assert.doesNotMatch(output, /No skills match/);
+});
+
+test("search ranks typo-close names without fuzzy-matching long descriptions", () => {
+	const panel = makePanel(() => undefined, {
+		items: [
+			makePanelItem("ask-better", "agents", "Agents (user)", {
+				description: "More text, only then ask-better or do first.",
+			}),
+			makePanelItem("my-bruno-postman", "agents", "Agents (user)"),
+			makePanelItem("my-boss-agent-cli", "agents", "Agents (user)"),
+		],
+	});
+	panel.render(120);
+	for (const character of "myboos") panel.handleInput(character);
+	const list = wideList(panel);
+
+	assert.doesNotMatch(list, /ask-better/);
+	assert.match(list, /Agents \(user\) \(2\)/);
+	assert.match(list, /my-boss-agent-cli/);
+	assert.match(list, /my-bruno-postman/);
+	assert.ok(list.indexOf("my-boss-agent-cli") < list.indexOf("my-bruno-postman"));
 });

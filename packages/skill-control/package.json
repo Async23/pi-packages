@@ -1,6 +1,6 @@
 {
   "name": "@async23/pi-skill-control",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Control model and direct user access for every Skill discovered by Pi",
   "type": "module",
   "license": "MIT",
