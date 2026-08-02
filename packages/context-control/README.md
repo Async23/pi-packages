@@ -10,6 +10,12 @@ pi install npm:@async23/pi-context-control
 
 Restart Pi after installation, or run `/reload` in an existing session.
 
+For local development from this repository:
+
+```bash
+pi --no-extensions -e ./packages/context-control
+```
+
 ## Usage
 
 Run:
@@ -18,17 +24,21 @@ Run:
 /context
 ```
 
-The centered Context inspector lists the instruction files discovered by Pi for the current working directory and previews each file's complete contents.
+The Context inspector lists the instruction files Pi discovered for the current working directory, groups them by configuration scope, and previews each file's complete contents. Groups start expanded and can be folded for the lifetime of the inspector. Filtering temporarily expands matching groups without changing their saved fold state.
 
-- Use Up/Down to select files or scroll the focused preview.
-- Press Space to include or exclude the selected file.
-- Press Enter to open the preview on narrow terminals.
-- Press Tab to switch between the file list and preview on wide terminals.
-- Use Page Up/Page Down, Home, or End to navigate long files.
-- Type while the file list is focused to search by path.
-- Press Escape to return from a narrow preview or close the inspector.
+- Up/Down or `j`/`k` selects a group heading or file while Files is focused and scrolls while Preview is focused.
+- Space or Enter folds or unfolds a selected group heading. On narrow terminals, Enter opens Preview for a selected file.
+- On a selected group heading, Left or `h` collapses the group and Right or `l` expands it. On a selected file, Left/Right or `h`/`l` cycles focus between Files and Preview. Moving past either end wraps to the other pane; Tab remains an alternative on wide terminals.
+- `/` enters path-filter input from either pane; the slash is a trigger and is not part of the displayed query. Matching is case-insensitive and supports non-contiguous path characters.
+- Filter input uses Pi's native single-line editor, including Unicode/IME cursor positioning, paste, Left/Right, Home/End, and customized keybindings. Enter keeps the filter, while Escape cancels the edit and restores the previous filter.
+- Outside filter input, Escape returns from the narrow Preview first, then clears a kept filter before closing the inspector. Pending changes require explicit discard confirmation.
+- On a selected file, Space or Shift+Space stages an include/exclude change, `r` restores the default **Included** state, and `u` undoes the latest state change. These shortcuts do nothing while Preview is focused.
+- `?` opens a read-only guide to the two Context states.
+- Ctrl+S writes and applies all pending changes without closing the inspector. The saved state becomes the new editing baseline, so more files can be adjusted immediately. No Pi reload is needed.
 
-Changes apply to the next submitted prompt and persist across Pi sessions. State is stored in:
+Every Context file is **Included** by default. An excluded file is a saved override; returning it to Included removes that override. Rows show `Included`, `Excluded`, or `Pending`, and the selected file shows its current state and whether it is using the default, a saved exclusion, a pending exclusion, or a pending reset.
+
+Applied changes affect the next submitted prompt and persist across Pi sessions. State is stored in:
 
 ```text
 ~/.pi/agent/context-control.json
