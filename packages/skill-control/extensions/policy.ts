@@ -2,68 +2,73 @@ import type { Skill } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, normalize, resolve } from "node:path";
 
-export const CONFIG_VERSION = 3;
+export const CONFIG_VERSION = 5;
 export const CONFIG_FILE_NAME = "skill-control.json";
 
-export type SkillAccessState = "both" | "model" | "user" | "neither";
+export type SkillAvailabilityState = "model-and-command" | "command-only" | "blocked";
 
-export interface SkillAccess {
+export interface SkillAvailability {
+	modelVisible: boolean;
+	commandAvailable: boolean;
+}
+
+export type BlockedSkillPaths = Set<string>;
+
+interface SkillControlConfigV5 {
+	version: typeof CONFIG_VERSION;
+	blockedPaths: string[];
+}
+
+interface LegacyDisabledPathsConfig {
+	version: 1 | 2 | 4;
+	disabledPaths: string[];
+}
+
+interface LegacyInvocationOverride {
 	model: boolean;
 	user: boolean;
 }
 
-export interface SkillAccessResolution {
-	access: SkillAccess;
-	source: "override" | "default";
-}
-
-export type SkillOverrides = Map<string, SkillAccess>;
-
-interface SkillControlConfigV3 {
-	version: typeof CONFIG_VERSION;
-	overrides: Record<string, SkillAccess>;
-}
-
-interface LegacySkillControlConfig {
-	version: 1 | 2;
-	disabledPaths: string[];
+interface LegacySkillControlConfigV3 {
+	version: 3;
+	overrides: Record<string, LegacyInvocationOverride>;
 }
 
 export interface ReadPolicyResult {
-	overrides: SkillOverrides;
+	blockedPaths: BlockedSkillPaths;
 	migrated: boolean;
 	error?: string;
 }
-
-export const ACCESS_BY_STATE: Readonly<Record<SkillAccessState, SkillAccess>> = {
-	both: { model: true, user: true },
-	model: { model: true, user: false },
-	user: { model: false, user: true },
-	neither: { model: false, user: false },
-};
-
-export const ACCESS_STATE_ORDER: readonly SkillAccessState[] = ["both", "model", "user", "neither"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isSkillAccess(value: unknown): value is SkillAccess {
+function isLegacyInvocationOverride(value: unknown): value is LegacyInvocationOverride {
 	return isRecord(value) && typeof value.model === "boolean" && typeof value.user === "boolean";
 }
 
-function isV3Config(value: unknown): value is SkillControlConfigV3 {
-	if (!isRecord(value) || value.version !== CONFIG_VERSION || !isRecord(value.overrides)) return false;
-	return Object.values(value.overrides).every(isSkillAccess);
-}
-
-function isLegacyConfig(value: unknown): value is LegacySkillControlConfig {
+function isV5Config(value: unknown): value is SkillControlConfigV5 {
 	return (
 		isRecord(value) &&
-		(value.version === 1 || value.version === 2) &&
+		value.version === CONFIG_VERSION &&
+		Array.isArray(value.blockedPaths) &&
+		value.blockedPaths.every((path) => typeof path === "string")
+	);
+}
+
+function isLegacyDisabledPathsConfig(value: unknown): value is LegacyDisabledPathsConfig {
+	return (
+		isRecord(value) &&
+		(value.version === 1 || value.version === 2 || value.version === 4) &&
 		Array.isArray(value.disabledPaths) &&
 		value.disabledPaths.every((path) => typeof path === "string")
 	);
+}
+
+function isLegacyV3Config(value: unknown): value is LegacySkillControlConfigV3 {
+	if (!isRecord(value) || value.version !== 3 || !isRecord(value.overrides)) return false;
+	return Object.values(value.overrides).every(isLegacyInvocationOverride);
 }
 
 export function canonicalPath(filePath: string, cwd = process.cwd()): string {
@@ -75,70 +80,50 @@ export function canonicalPath(filePath: string, cwd = process.cwd()): string {
 	}
 }
 
-export function cloneAccess(access: SkillAccess): SkillAccess {
-	return { model: access.model, user: access.user };
+export function nativeSkillAvailability(skill: Pick<Skill, "disableModelInvocation">): SkillAvailability {
+	return { modelVisible: !skill.disableModelInvocation, commandAvailable: true };
 }
 
-export function cloneOverrides(overrides: ReadonlyMap<string, SkillAccess>): SkillOverrides {
-	return new Map([...overrides].map(([path, access]) => [path, cloneAccess(access)]));
-}
-
-export function replaceOverrides(target: SkillOverrides, source: ReadonlyMap<string, SkillAccess>): void {
-	target.clear();
-	for (const [path, access] of source) target.set(path, cloneAccess(access));
-}
-
-export function skillAccessState(access: SkillAccess): SkillAccessState {
-	if (access.model && access.user) return "both";
-	if (access.model) return "model";
-	if (access.user) return "user";
-	return "neither";
-}
-
-export function accessForState(state: SkillAccessState): SkillAccess {
-	return cloneAccess(ACCESS_BY_STATE[state]);
-}
-
-export function defaultSkillAccess(skill: Pick<Skill, "disableModelInvocation">): SkillAccess {
-	return { model: !skill.disableModelInvocation, user: true };
-}
-
-export function resolveSkillAccess(
+export function effectiveSkillAvailability(
 	path: string,
-	defaultAccess: SkillAccess,
-	overrides: ReadonlyMap<string, SkillAccess>,
-): SkillAccessResolution {
-	const override = overrides.get(path);
-	if (override) return { access: cloneAccess(override), source: "override" };
-	return { access: cloneAccess(defaultAccess), source: "default" };
+	nativeAvailability: SkillAvailability,
+	blockedPaths: ReadonlySet<string>,
+): SkillAvailability {
+	if (blockedPaths.has(path)) return { modelVisible: false, commandAvailable: false };
+	return {
+		modelVisible: nativeAvailability.modelVisible,
+		commandAvailable: nativeAvailability.commandAvailable,
+	};
 }
 
-export function resolveUserAccess(path: string, overrides: ReadonlyMap<string, SkillAccess>): boolean {
-	return resolveSkillAccess(path, { model: true, user: true }, overrides).access.user;
+export function skillAvailabilityState(availability: SkillAvailability): SkillAvailabilityState {
+	if (availability.modelVisible && availability.commandAvailable) return "model-and-command";
+	if (availability.commandAvailable) return "command-only";
+	return "blocked";
 }
 
-export function overridesEqual(
-	left: ReadonlyMap<string, SkillAccess>,
-	right: ReadonlyMap<string, SkillAccess>,
-): boolean {
+export function cloneBlockedPaths(blockedPaths: ReadonlySet<string>): BlockedSkillPaths {
+	return new Set(blockedPaths);
+}
+
+export function replaceBlockedPaths(target: BlockedSkillPaths, source: ReadonlySet<string>): void {
+	target.clear();
+	for (const path of source) target.add(path);
+}
+
+export function blockedPathsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
 	if (left.size !== right.size) return false;
-	for (const [path, access] of left) {
-		const candidate = right.get(path);
-		if (!candidate || candidate.model !== access.model || candidate.user !== access.user) return false;
+	for (const path of left) {
+		if (!right.has(path)) return false;
 	}
 	return true;
 }
 
-export function changedOverrideCount(
-	before: ReadonlyMap<string, SkillAccess>,
-	after: ReadonlyMap<string, SkillAccess>,
-): number {
-	const paths = new Set([...before.keys(), ...after.keys()]);
+export function changedBlockedPathCount(before: ReadonlySet<string>, after: ReadonlySet<string>): number {
+	const paths = new Set([...before, ...after]);
 	let changed = 0;
 	for (const path of paths) {
-		const left = before.get(path);
-		const right = after.get(path);
-		if (!left || !right || left.model !== right.model || left.user !== right.user) changed += 1;
+		if (before.has(path) !== after.has(path)) changed += 1;
 	}
 	return changed;
 }
@@ -146,46 +131,52 @@ export function changedOverrideCount(
 export function readPolicyConfig(configPath: string): ReadPolicyResult {
 	try {
 		const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-		if (isV3Config(parsed)) {
+		if (isV5Config(parsed)) {
 			return {
-				overrides: new Map(
-					Object.entries(parsed.overrides).map(([path, access]) => [canonicalPath(path), cloneAccess(access)]),
-				),
+				blockedPaths: new Set(parsed.blockedPaths.map((path) => canonicalPath(path))),
 				migrated: false,
 			};
 		}
-		if (isLegacyConfig(parsed)) {
+		if (isLegacyDisabledPathsConfig(parsed)) {
 			return {
-				overrides: new Map(
-					parsed.disabledPaths.map((path) => [canonicalPath(path), accessForState("neither")]),
+				blockedPaths: new Set(parsed.disabledPaths.map((path) => canonicalPath(path))),
+				migrated: true,
+			};
+		}
+		if (isLegacyV3Config(parsed)) {
+			// V3 could independently remove model visibility or direct-command
+			// availability. V5 only leaves the Skill Unblocked or makes it Blocked, so
+			// conservatively migrate every policy that was not fully open to Blocked.
+			return {
+				blockedPaths: new Set(
+					Object.entries(parsed.overrides)
+						.filter(([, override]) => !override.model || !override.user)
+						.map(([path]) => canonicalPath(path)),
 				),
 				migrated: true,
 			};
 		}
 		return {
-			overrides: new Map(),
+			blockedPaths: new Set(),
 			migrated: false,
 			error: `Invalid skill control config: ${configPath}`,
 		};
 	} catch (error) {
 		if (isRecord(error) && error.code === "ENOENT") {
-			return { overrides: new Map(), migrated: false };
+			return { blockedPaths: new Set(), migrated: false };
 		}
 		return {
-			overrides: new Map(),
+			blockedPaths: new Set(),
 			migrated: false,
 			error: `Could not read skill control config: ${configPath}`,
 		};
 	}
 }
 
-export function writePolicyConfig(configPath: string, overrides: ReadonlyMap<string, SkillAccess>): void {
-	const sortedEntries = [...overrides]
-		.sort(([left], [right]) => left.localeCompare(right))
-		.map(([path, access]) => [path, cloneAccess(access)] as const);
-	const config: SkillControlConfigV3 = {
+export function writePolicyConfig(configPath: string, blockedPaths: ReadonlySet<string>): void {
+	const config: SkillControlConfigV5 = {
 		version: CONFIG_VERSION,
-		overrides: Object.fromEntries(sortedEntries),
+		blockedPaths: [...blockedPaths].sort((left, right) => left.localeCompare(right)),
 	};
 	const temporaryPath = `${configPath}.${process.pid}.tmp`;
 	mkdirSync(dirname(configPath), { recursive: true });
