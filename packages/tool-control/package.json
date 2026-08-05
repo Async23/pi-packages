@@ -1,0 +1,39 @@
+{
+  "name": "@async23/pi-tool-control",
+  "version": "0.1.0",
+  "description": "Control the Tools exposed to Pi's LLM per session branch",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "tools",
+    "tool-control"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/tool-control"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/tool-control#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ]
+  }
+}

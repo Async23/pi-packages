@@ -9,6 +9,33 @@ import {
 } from "./policy.ts";
 import { McpRuntimeManager, type RuntimePrimitiveCatalog } from "./runtime.ts";
 
+export const MCP_TOOL_INVENTORY_PROTOCOL = "@async23/pi-mcp-control/tool-inventory";
+export const MCP_TOOL_INVENTORY_VERSION = 1;
+export const MCP_TOOL_INVENTORY_REQUEST_CHANNEL = `${MCP_TOOL_INVENTORY_PROTOCOL}/v1/request`;
+export const MCP_TOOL_INVENTORY_SNAPSHOT_CHANNEL = `${MCP_TOOL_INVENTORY_PROTOCOL}/v1/snapshot`;
+
+export interface McpToolInventorySourceV1 {
+	instanceId: string;
+	agentId: string;
+	agentLabel: string;
+	serverName: string;
+	primitiveKind: "tool" | "resource";
+	remoteName: string;
+}
+
+export interface McpToolInventoryItemV1 {
+	toolName: string;
+	available: boolean;
+	source: McpToolInventorySourceV1;
+}
+
+export interface McpToolInventorySnapshotV1 {
+	protocol: typeof MCP_TOOL_INVENTORY_PROTOCOL;
+	version: typeof MCP_TOOL_INVENTORY_VERSION;
+	generation: number;
+	tools: McpToolInventoryItemV1[];
+}
+
 function identifierPart(value: string, maxLength: number): string {
 	const normalized = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
 	return (normalized || "unnamed").slice(0, maxLength);
@@ -58,6 +85,7 @@ interface InstanceRegistration {
 	definition: RuntimeServerDefinition;
 	toolNames: Set<string>;
 	fingerprints: Map<string, string>;
+	inventory: Map<string, McpToolInventoryItemV1>;
 }
 
 export class PiToolBridge {
@@ -67,6 +95,8 @@ export class PiToolBridge {
 	readonly #instances = new Map<string, InstanceRegistration>();
 	readonly #allManagedNames = new Set<string>();
 	readonly #unsubscribe: () => void;
+	readonly #unsubscribeInventoryRequest: () => void;
+	#inventoryGeneration = 0;
 
 	constructor(
 		pi: ExtensionAPI,
@@ -80,6 +110,11 @@ export class PiToolBridge {
 			if (snapshot.state === "ready") this.#registerCatalog(instanceId, catalog);
 			else this.#deactivateInstance(instanceId);
 		});
+		this.#unsubscribeInventoryRequest = pi.events?.on?.(MCP_TOOL_INVENTORY_REQUEST_CHANNEL, (data) => {
+			if (!isRecord(data) || data.protocol !== MCP_TOOL_INVENTORY_PROTOCOL || data.version !== MCP_TOOL_INVENTORY_VERSION) return;
+			this.#publishInventorySnapshot();
+		}) ?? (() => undefined);
+		this.#publishInventorySnapshot();
 	}
 
 	track(definition: RuntimeServerDefinition): void {
@@ -90,19 +125,59 @@ export class PiToolBridge {
 				definition,
 				toolNames: new Set(),
 				fingerprints: new Map(),
+				inventory: new Map(),
 			});
 		}
+	}
+
+	inventorySnapshot(): McpToolInventorySnapshotV1 {
+		return {
+			protocol: MCP_TOOL_INVENTORY_PROTOCOL,
+			version: MCP_TOOL_INVENTORY_VERSION,
+			generation: this.#inventoryGeneration,
+			tools: [...this.#instances.values()]
+				.flatMap((registration) => [...registration.inventory.values()])
+				.sort((left, right) => left.toolName.localeCompare(right.toolName))
+				.map((item) => ({ ...item, source: { ...item.source } })),
+		};
+	}
+
+	#publishInventorySnapshot(): void {
+		this.#inventoryGeneration += 1;
+		this.#pi.events?.emit?.(MCP_TOOL_INVENTORY_SNAPSHOT_CHANNEL, this.inventorySnapshot());
+	}
+
+	#inventoryItem(
+		registration: InstanceRegistration,
+		toolName: string,
+		primitiveKind: McpToolInventorySourceV1["primitiveKind"],
+		remoteName: string,
+	): McpToolInventoryItemV1 {
+		return {
+			toolName,
+			available: true,
+			source: {
+				instanceId: registration.definition.instanceId,
+				agentId: registration.definition.agentId,
+				agentLabel: registration.definition.agentLabel,
+				serverName: registration.definition.serverName,
+				primitiveKind,
+				remoteName,
+			},
+		};
 	}
 
 	#registerCatalog(instanceId: string, catalog: RuntimePrimitiveCatalog): void {
 		const registration = this.#instances.get(instanceId);
 		if (!registration) return;
 		const nextNames = new Set<string>();
+		for (const item of registration.inventory.values()) item.available = false;
 
 		for (const remoteTool of catalog.tools) {
 			const name = piToolName(registration.definition, remoteTool.name);
 			nextNames.add(name);
 			this.#allManagedNames.add(name);
+			registration.inventory.set(name, this.#inventoryItem(registration, name, "tool", remoteTool.name));
 			const fingerprint = canonicalJson(remoteTool);
 			if (registration.fingerprints.get(name) === fingerprint) continue;
 			registration.fingerprints.set(name, fingerprint);
@@ -137,6 +212,7 @@ export class PiToolBridge {
 			const name = resourceToolName(registration.definition);
 			nextNames.add(name);
 			this.#allManagedNames.add(name);
+			registration.inventory.set(name, this.#inventoryItem(registration, name, "resource", "read-resource"));
 			const fingerprint = canonicalJson({ resources: catalog.resources, templates: catalog.resourceTemplates });
 			if (registration.fingerprints.get(name) !== fingerprint) {
 				registration.fingerprints.set(name, fingerprint);
@@ -165,13 +241,18 @@ export class PiToolBridge {
 
 		registration.toolNames = nextNames;
 		this.#reconcileActiveTools();
+		this.#publishInventorySnapshot();
 	}
 
 	#deactivateInstance(instanceId: string): void {
 		const registration = this.#instances.get(instanceId);
-		if (!registration || registration.toolNames.size === 0) return;
+		if (!registration) return;
+		const hadAvailableTool = [...registration.inventory.values()].some((item) => item.available);
+		if (registration.toolNames.size === 0 && !hadAvailableTool) return;
+		for (const item of registration.inventory.values()) item.available = false;
 		registration.toolNames.clear();
 		this.#reconcileActiveTools();
+		this.#publishInventorySnapshot();
 	}
 
 	#reconcileActiveTools(): void {
@@ -188,6 +269,7 @@ export class PiToolBridge {
 
 	dispose(): void {
 		this.#unsubscribe();
+		this.#unsubscribeInventoryRequest();
 		for (const registration of this.#instances.values()) registration.toolNames.clear();
 		this.#reconcileActiveTools();
 	}

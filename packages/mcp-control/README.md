@@ -46,6 +46,8 @@ Keyboard controls:
 
 Connecting is deliberately explicit in this version: opening `/mcp` never starts commands or contacts remote endpoints. After a connection succeeds, MCP tools are registered in Pi with stable Agent/server-qualified names. Resources receive a server-qualified read tool. Prompts remain user-controlled and are invoked with `p` from the panel rather than exposed as model-controlled tools.
 
+For optional integration with `@async23/pi-tool-control`, the Tool bridge publishes a versioned, replace-all MCP Tool Inventory snapshot on Pi's shared Event Bus. It maps each generated Pi Tool Name to its Agent, MCP Server, remote primitive, and current availability. Disconnected Tools remain marked unavailable even when Pi internally retains their registered definitions. The inventory contains no configuration values, credentials, invocation arguments, or Tool results, and consumers do not import mcp-control modules directly. `mcp-control` still registers and activates its own Tools, so it remains complete without `tool-control`.
+
 ## Configuration sources
 
 | Agent tab | Discovered sources | Write support |

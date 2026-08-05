@@ -10,11 +10,16 @@ import {
 	AGENT_SOURCES,
 	ConcurrentConfigChangeError,
 	ConfigMutationCoordinator,
+	MCP_TOOL_INVENTORY_PROTOCOL,
+	MCP_TOOL_INVENTORY_REQUEST_CHANNEL,
+	MCP_TOOL_INVENTORY_SNAPSHOT_CHANNEL,
+	MCP_TOOL_INVENTORY_VERSION,
 	McpControl,
 	McpControlPanel,
 	McpRuntimeManager,
 	MemoryConfigFileStore,
 	NodeConfigFileStore,
+	PiToolBridge,
 	UnsafeConfigPathError,
 	adaptToolResult,
 	discoverCatalog,
@@ -321,6 +326,99 @@ test("runtime loads every primitive and keeps tool-level errors as results", asy
 	assert.deepEqual(calls, [{ name: "search", arguments: { query: "x" } }]);
 	assert.match(piToolName(definition, "search"), /^mcp_claude_shared_search_/);
 	await runtime.disconnectAll();
+});
+
+test("PiToolBridge publishes replace-all v1 Tool Inventory snapshots with availability", () => {
+	const handlers = new Map();
+	const emitted = [];
+	const events = {
+		emit(channel, data) {
+			emitted.push({ channel, data });
+			handlers.get(channel)?.(data);
+		},
+		on(channel, handler) {
+			handlers.set(channel, handler);
+			return () => handlers.delete(channel);
+		},
+	};
+	let runtimeListener;
+	const runtime = {
+		subscribe(listener) {
+			runtimeListener = listener;
+			return () => {
+				runtimeListener = undefined;
+			};
+		},
+	};
+	let activeTools = ["read"];
+	const registered = new Map();
+	const pi = {
+		events,
+		registerTool(definition) {
+			registered.set(definition.name, definition);
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(names) {
+			activeTools = [...names];
+		},
+	};
+	const bridge = new PiToolBridge(pi, runtime);
+	const definition = {
+		instanceId: "instance-1",
+		entryId: "entry-1",
+		agentId: "pi",
+		agentLabel: "Pi",
+		serverName: "chrome-devtools",
+		config: { command: "node" },
+		flavor: "generic",
+		cwd: projectRoot,
+	};
+	bridge.track(definition);
+	runtimeListener("instance-1", { state: "ready" }, {
+		tools: [{ name: "click", description: "Click", inputSchema: { type: "object" } }],
+		resources: [],
+		resourceTemplates: [],
+		prompts: [],
+	});
+	const name = piToolName(definition, "click");
+	assert.equal(registered.has(name), true);
+	assert.equal(activeTools.includes(name), true);
+	assert.deepEqual(bridge.inventorySnapshot().tools, [
+		{
+			toolName: name,
+			available: true,
+			source: {
+				instanceId: "instance-1",
+				agentId: "pi",
+				agentLabel: "Pi",
+				serverName: "chrome-devtools",
+				primitiveKind: "tool",
+				remoteName: "click",
+			},
+		},
+	]);
+
+	events.emit(MCP_TOOL_INVENTORY_REQUEST_CHANNEL, {
+		protocol: MCP_TOOL_INVENTORY_PROTOCOL,
+		version: MCP_TOOL_INVENTORY_VERSION,
+	});
+	const response = emitted.filter((entry) => entry.channel === MCP_TOOL_INVENTORY_SNAPSHOT_CHANNEL).at(-1).data;
+	assert.equal(response.protocol, MCP_TOOL_INVENTORY_PROTOCOL);
+	assert.equal(response.version, 1);
+	assert.equal(response.tools[0].available, true);
+
+	runtimeListener("instance-1", { state: "disconnected" }, {
+		tools: [],
+		resources: [],
+		resourceTemplates: [],
+		prompts: [],
+	});
+	assert.equal(bridge.inventorySnapshot().tools[0].available, false);
+	assert.deepEqual(activeTools, ["read"]);
+	bridge.dispose();
+	assert.equal(handlers.has(MCP_TOOL_INVENTORY_REQUEST_CHANNEL), false);
 });
 
 const plainTheme = {
