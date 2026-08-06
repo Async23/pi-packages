@@ -1244,38 +1244,6 @@ export class SkillControlPanel implements Component, Focusable {
 		return Math.max(1, Math.min(this.#maximumOverlayHeight(), Math.floor(this.#tui.terminal.rows * 0.78)));
 	}
 
-	#nativeSummaryEntries(): { text: string; width: number }[] {
-		const scoped = this.#providerItems();
-		let modelAndCommandCount = 0;
-		let commandOnlyCount = 0;
-		for (const item of scoped) {
-			const state = this.#nativeStateFor(item);
-			if (state === "model-and-command") modelAndCommandCount += 1;
-			else if (state === "command-only") commandOnlyCount += 1;
-		}
-		const entries = [
-			this.#theme.fg("text", `${modelAndCommandCount} Model + /skill`),
-			`${this.#theme.fg("warning", this.#userOnlyIcon)} ${this.#theme.fg("muted", `${commandOnlyCount} /skill only`)}`,
-		];
-		return entries.map((text) => ({ text, width: visibleWidth(text) }));
-	}
-
-	#policySummaryEntries(): { text: string; width: number }[] {
-		const scoped = this.#providerItems();
-		const blockedCount = scoped.filter((item) => this.#isBlocked(item)).length;
-		const pendingCount = scoped.filter((item) => this.#isPolicyPending(item)).length;
-		const blockedColor = blockedCount > 0 ? "warning" : "dim";
-		const entries = [
-			`${this.#theme.fg(blockedColor, BLOCKED_ICON)} ${this.#theme.fg(blockedColor, String(blockedCount))}`,
-		];
-		if (pendingCount > 0) {
-			entries.push(
-				`${this.#theme.fg("warning", "△")} ${this.#theme.fg("warning", `${pendingCount} Pending`)}`,
-			);
-		}
-		return entries.map((text) => ({ text, width: visibleWidth(text) }));
-	}
-
 	#nativeMarker(state: SkillAvailabilityState): string {
 		if (state === "command-only") return this.#theme.fg("warning", this.#userOnlyIcon);
 		return "";
@@ -1283,14 +1251,6 @@ export class SkillControlPanel implements Component, Focusable {
 
 	#labelWidth(width: number): number {
 		return width >= 30 ? Math.min(14, width - 1) : 0;
-	}
-
-	#labeledValueWidth(width: number): number {
-		const contentWidth = Math.max(1, width);
-		const labelWidth = this.#labelWidth(contentWidth);
-		if (labelWidth > 0) return Math.max(1, contentWidth - labelWidth);
-		const indent = Math.min(2, Math.max(0, contentWidth - 1));
-		return Math.max(1, contentWidth - indent);
 	}
 
 	#labelPrefix(label: string, width: number): string {
@@ -1357,24 +1317,6 @@ export class SkillControlPanel implements Component, Focusable {
 		return lines.length > 0 ? lines : [""];
 	}
 
-	#labeledEntryLines(label: string, entries: { text: string; width: number }[], width: number): string[] {
-		const contentWidth = Math.max(1, width);
-		const labelWidth = this.#labelWidth(contentWidth);
-		if (labelWidth === 0) {
-			const indent = Math.min(2, Math.max(0, contentWidth - 1));
-			const entryWidth = Math.max(1, contentWidth - indent);
-			return [
-				...wrapTextWithAnsi(this.#theme.fg("muted", label), contentWidth),
-				...this.#wrapEntries(entries, entryWidth).map((line) => `${" ".repeat(indent)}${line}`),
-			];
-		}
-
-		const entryLines = this.#wrapEntries(entries, Math.max(1, contentWidth - labelWidth));
-		return entryLines.map(
-			(line, index) => `${this.#labelPrefix(index === 0 ? label : "", labelWidth)}${line}`,
-		);
-	}
-
 	#providerTabLines(width: number): string[] {
 		const activeProvider = this.#activeProvider();
 
@@ -1384,38 +1326,87 @@ export class SkillControlPanel implements Component, Focusable {
 			return this.#theme.fg("muted", text);
 		};
 
-		const entries = this.#sourceTabs.map((provider) => {
+		let emptyCount = 0;
+		const entries: { text: string; width: number }[] = [];
+		for (const provider of this.#sourceTabs) {
 			const count = this.#providerCount(provider);
+			if (provider.id !== "all" && count === 0) {
+				emptyCount += 1;
+				continue;
+			}
 			const text = style(`${provider.shortLabel} ${count}`, provider.id === activeProvider.id, count === 0);
-			return { text, width: visibleWidth(text) };
-		});
-		return this.#labeledEntryLines("Sources", entries, width);
+			entries.push({ text, width: visibleWidth(text) });
+		}
+		if (emptyCount > 0) {
+			const text = this.#theme.fg("dim", `${emptyCount} empty ${emptyCount === 1 ? "source" : "sources"}`);
+			entries.push({ text, width: visibleWidth(text) });
+		}
+		return this.#wrapEntries(entries, width);
 	}
 
-	#searchValue(width: number): string {
+	#filterValue(width: number): string {
 		if (this.#filterEditing) {
-			const inputWidth = this.#labeledValueWidth(width);
-			const rendered = this.#filterInput.render(inputWidth + 2)[0] ?? "> ";
+			const rendered = this.#filterInput.render(Math.max(1, width) + 2)[0] ?? "> ";
 			return (rendered.startsWith("> ") ? rendered.slice(2) : rendered).trimEnd();
 		}
-		if (this.#query) return this.#theme.fg("text", this.#query);
-		const placeholder = width >= 42 ? " to filter skills" : " filter";
+		if (this.#query) return `${this.#theme.fg("accent", "/")} ${this.#theme.fg("text", this.#query)}`;
+		const provider = this.#activeProvider();
+		const placeholder = provider.id === "all" ? " filter all skills" : ` filter within ${provider.label}`;
 		return `${this.#theme.fg("accent", "/")}${this.#theme.fg("dim", placeholder)}`;
 	}
 
-	#sectionSegment(label: string, width: number, focused: boolean): string {
+	#filterHeaderLine(width: number): string {
+		const value = this.#filterValue(width);
+		if (this.#filterEditing) return truncateToWidth(value, Math.max(0, width), "");
+		return this.#joined(value, this.#theme.fg("dim", "[/] source"), width);
+	}
+
+	#styledSectionSegment(label: string, width: number): string {
 		if (width <= 0) return "";
 		const prefix = "─ ";
 		const suffix = " ";
-		const titleWidth = visibleWidth(prefix) + visibleWidth(label) + visibleWidth(suffix);
-		const styledLabel = focused
-			? this.#theme.fg("accent", this.#theme.bold(label))
-			: this.#theme.fg("muted", label);
+		const labelWidth = Math.max(0, width - visibleWidth(prefix) - visibleWidth(suffix));
+		const clippedLabel = truncateToWidth(label, labelWidth, "…");
+		const titleWidth = visibleWidth(prefix) + visibleWidth(clippedLabel) + visibleWidth(suffix);
 		const fill = Math.max(0, width - titleWidth);
-		return `${this.#theme.fg("borderMuted", prefix)}${styledLabel}${this.#theme.fg(
+		return `${this.#theme.fg("borderMuted", prefix)}${clippedLabel}${this.#theme.fg(
 			"borderMuted",
 			`${suffix}${"─".repeat(fill)}`,
 		)}`;
+	}
+
+	#sectionSegment(label: string, width: number, focused: boolean): string {
+		const styledLabel = focused
+			? this.#theme.fg("accent", this.#theme.bold(label))
+			: this.#theme.fg("muted", label);
+		return this.#styledSectionSegment(styledLabel, width);
+	}
+
+	#listSectionSegment(width: number, focused: boolean): string {
+		const items = this.#filteredItems();
+		let modelCount = 0;
+		let commandOnlyCount = 0;
+		for (const item of items) {
+			const state = this.#nativeStateFor(item);
+			if (state === "model-and-command") modelCount += 1;
+			else if (state === "command-only") commandOnlyCount += 1;
+		}
+		const blockedCount = items.filter((item) => this.#isBlocked(item)).length;
+		const pendingCount = items.filter((item) => this.#isPolicyPending(item)).length;
+		const separator = this.#theme.fg("borderMuted", " · ");
+		const title = focused
+			? this.#theme.fg("accent", this.#theme.bold(`Skills ${items.length}`))
+			: this.#theme.fg("muted", `Skills ${items.length}`);
+		const model = this.#theme.fg("muted", `model ${modelCount}`);
+		const commandOnly = `${this.#theme.fg("warning", this.#userOnlyIcon)} ${this.#theme.fg(
+			"muted",
+			String(commandOnlyCount),
+		)}`;
+		const blockedColor = blockedCount > 0 ? "warning" : "dim";
+		const blocked = this.#theme.fg(blockedColor, `${BLOCKED_ICON} ${blockedCount}`);
+		const entries = [title, model, commandOnly, blocked];
+		if (pendingCount > 0) entries.push(this.#theme.fg("warning", `△ ${pendingCount}`));
+		return this.#styledSectionSegment(entries.join(separator), width);
 	}
 
 	#buildListRows(items: SkillListItem[]): ListRow[] {
@@ -1517,7 +1508,7 @@ export class SkillControlPanel implements Component, Focusable {
 			const badge = status
 				? this.#theme.fg("warning", status === "Pending" ? status : BLOCKED_ICON)
 				: "";
-			const left = icon ? `  ${icon}  ${label}` : `  ${label}`;
+			const left = icon ? `    ${icon} ${label}` : `    ${label}`;
 			const contentWidth = Math.max(0, width - 2);
 			const content = badge ? this.#joined(left, badge, contentWidth) : left;
 			return this.#paneContent(content, width, selected && focused);
@@ -1752,20 +1743,12 @@ export class SkillControlPanel implements Component, Focusable {
 		const listWidth = Math.min(44, Math.max(32, Math.floor(innerWidth * 0.38)));
 		const previewWidth = innerWidth - listWidth - 1;
 		const lines = this.#topBorder(width, "Skills");
-		for (const summaryLine of this.#labeledEntryLines("Native", this.#nativeSummaryEntries(), headerWidth)) {
-			lines.push(this.#fullLine(summaryLine, innerWidth));
-		}
-		for (const summaryLine of this.#labeledEntryLines("Policy", this.#policySummaryEntries(), headerWidth)) {
-			lines.push(this.#fullLine(summaryLine, innerWidth));
-		}
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		for (const searchLine of this.#labeledTextLines("Filter", this.#searchValue(headerWidth), headerWidth)) {
-			lines.push(this.#fullLine(searchLine, innerWidth));
-		}
+		lines.push(this.#fullLine(this.#filterHeaderLine(headerWidth), innerWidth));
 		lines.push(
-			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", listWidth, this.#focus === "list")}${this.#theme.fg(
+			`${this.#theme.fg("borderMuted", "├")}${this.#listSectionSegment(listWidth, this.#focus === "list")}${this.#theme.fg(
 				"borderMuted",
 				"┬",
 			)}${this.#sectionSegment("Preview", previewWidth, this.#focus === "preview")}${this.#theme.fg("borderMuted", "┤")}`,
@@ -1812,20 +1795,12 @@ export class SkillControlPanel implements Component, Focusable {
 		const innerWidth = width - 2;
 		const headerWidth = Math.max(1, innerWidth - 2);
 		const lines = this.#topBorder(width, "Skills");
-		for (const summaryLine of this.#labeledEntryLines("Native", this.#nativeSummaryEntries(), headerWidth)) {
-			lines.push(this.#fullLine(summaryLine, innerWidth));
-		}
-		for (const summaryLine of this.#labeledEntryLines("Policy", this.#policySummaryEntries(), headerWidth)) {
-			lines.push(this.#fullLine(summaryLine, innerWidth));
-		}
 		for (const tabLine of this.#providerTabLines(headerWidth)) {
 			lines.push(this.#fullLine(tabLine, innerWidth));
 		}
-		for (const searchLine of this.#labeledTextLines("Filter", this.#searchValue(headerWidth), headerWidth)) {
-			lines.push(this.#fullLine(searchLine, innerWidth));
-		}
+		lines.push(this.#fullLine(this.#filterHeaderLine(headerWidth), innerWidth));
 		lines.push(
-			`${this.#theme.fg("borderMuted", "├")}${this.#sectionSegment("Skills", innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
+			`${this.#theme.fg("borderMuted", "├")}${this.#listSectionSegment(innerWidth, true)}${this.#theme.fg("borderMuted", "┤")}`,
 		);
 		const selectedItem = this.#currentItem();
 		const selectedGroup = this.#currentGroup();

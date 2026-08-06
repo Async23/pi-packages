@@ -382,38 +382,32 @@ function listLine(panel, skillName) {
 		.find((line) => line.includes(skillName));
 }
 
-test("panel separates native routes from blocking policy without Extra scan", () => {
-	const panel = makePanel();
-	const output = panel.render(120).join("\n");
+function filterHeaderLine(panel, width = 120) {
+	const lines = panel.render(width);
+	const sectionIndex = lines.findIndex((line) => /^├─ Skills \d/.test(terminalText(line)));
+	const rawLine =
+		lines.find((line) => line.includes(CURSOR_MARKER)) ??
+		lines.find((line) => terminalText(line).includes("[/] source")) ??
+		(sectionIndex > 0 ? lines[sectionIndex - 1] : undefined);
+	assert.ok(rawLine);
+	return terminalText(rawLine);
+}
 
-	assert.match(output, /Native\s+5 Model \+ \/skill\s+ⓤ 1 \/skill only/);
-	assert.match(output, /Policy\s+⊘ 2/);
+test("panel uses a source-first compact header without Extra scan", () => {
+	const panel = makePanel();
+	const output = terminalText(panel.render(120).join("\n"));
+
+  assert.match(output, /Skills 6 · model 5 · ⓤ 1 · ⊘ 2/);
+	assert.match(output, /\[ALL 6\]\s+\.agents 3\s+Package 1\s+Settings 1\s+CLI 1\s+11 empty sources/);
+	assert.match(output, /\/ filter all skills\s+\[\/\] source/);
+	assert.doesNotMatch(output, /Native\s+5 Model \+ \/skill|Policy\s+⊘ 2|Sources\s+\[ALL 6\]|Filter\s+\//);
 	assert.doesNotMatch(output, /\bAvailability\b/);
 	assert.doesNotMatch(output, /[●◑○◆]|Model only|User only|Manual only|Disabled/);
-	for (const expected of [
-		"[ALL 6]",
-		".agents 3",
-		"Pi 0",
-		"Claude 0",
-		"Codex 0",
-		"OpenCode 0",
-		"Gemini 0",
-		"Antigravity 0",
-		"Cursor 0",
-		"Trae 0",
-		"Grok 0",
-		"Kimi Code 0",
-		"Zed 0",
-		"Package 1",
-		"Settings 1",
-		"CLI 1",
-	]) {
-		assert.ok(output.includes(expected), `missing source summary: ${expected}`);
-	}
+	assert.doesNotMatch(output, /\bPi 0\b|\bClaude 0\b|\bKimi Code 0\b|\bZed 0\b/);
 	assert.doesNotMatch(output, /Extra scan|Claude off|Codex off/);
 });
 
-test("source summary moves non-empty tools ahead of zero-count tools", () => {
+test("source strip keeps non-empty tools and collapses zero-count tools", () => {
 	const panel = makePanel(() => undefined, {
 		items: [
 			makePanelItem("shared-skill", "agents", ".agents (~/.agents/skills)"),
@@ -424,9 +418,8 @@ test("source summary moves non-empty tools ahead of zero-count tools", () => {
 
 	assert.ok(output.indexOf("[ALL 2]") < output.indexOf(".agents 1"));
 	assert.ok(output.indexOf(".agents 1") < output.indexOf("Grok 1"));
-	assert.ok(output.indexOf("Grok 1") < output.indexOf("Pi 0"));
-	assert.ok(output.indexOf("Pi 0") < output.indexOf("Kimi Code 0"));
-	assert.ok(output.indexOf("Kimi Code 0") < output.indexOf("Zed 0"));
+	assert.ok(output.indexOf("Grok 1") < output.indexOf("10 empty sources"));
+	assert.doesNotMatch(output, /\bPi 0\b|\bKimi Code 0\b|\bZed 0\b/);
 });
 
 test("a specific source groups Skills by configuration level", () => {
@@ -540,21 +533,29 @@ test("group headers are selectable and Space or Enter toggles them", () => {
 	assert.match(widePreview(panel), /# alpha/);
 });
 
-test("Skill rows are indented beneath their group headings", () => {
+test("Skill rows use a uniform child indent beneath their group headings", () => {
 	const panel = makePanel(() => undefined, {
 		items: [
 			makePanelItem("alpha", "agents", ".agents (~/.agents/skills)"),
-			makePanelItem("beta", "agents", ".agents (~/.agents/skills)"),
+			makePanelItem("command-only", "agents", ".agents (~/.agents/skills)", {
+				nativeAvailability: { modelVisible: false, commandAvailable: true },
+			}),
 		],
 	});
 	const lines = wideList(panel).split("\n");
 	const groupLine = lines.find((line) => line.includes(".agents (~/.agents/skills)"));
-	const skillLine = lines.find((line) => line.includes("alpha"));
+	const normalSkillLine = lines.find((line) => line.includes("alpha"));
+	const commandOnlySkillLine = lines.find((line) => line.includes("command-only"));
 	assert.ok(groupLine);
-	assert.ok(skillLine);
-	const groupIndent = groupLine.match(/^ */)?.[0].length ?? 0;
-	const skillIndent = skillLine.match(/^ */)?.[0].length ?? 0;
-	assert.equal(skillIndent, groupIndent + 2);
+	assert.ok(normalSkillLine);
+	assert.ok(commandOnlySkillLine);
+	const groupLabelColumn = groupLine.indexOf(".agents");
+	const normalSkillLabelColumn = normalSkillLine.indexOf("alpha");
+	const commandOnlySkillIconColumn = commandOnlySkillLine.indexOf(FALLBACK_USER_ICON);
+	const commandOnlySkillLabelColumn = commandOnlySkillLine.indexOf("command-only");
+	assert.equal(normalSkillLabelColumn, groupLabelColumn + 2);
+	assert.equal(commandOnlySkillIconColumn, normalSkillLabelColumn);
+	assert.equal(commandOnlySkillLabelColumn, commandOnlySkillIconColumn + 2);
 });
 
 test("selected background survives ANSI resets introduced by long-name truncation", () => {
@@ -770,11 +771,11 @@ test("Skill rows show only the user-only and blocked exceptions", () => {
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Blocked · Blocked by policy/);
 });
 
-test("Skill rows use the Font Awesome user glyph when Nerd Font is detected", () => {
+test("Skill rows use the Font Awesome user glyph with a one-cell label gap", () => {
 	const panel = makePanel(() => undefined, { userOnlyIcon: FONT_AWESOME_USER_ICON });
 	const lines = panel.render(48);
 
-	assert.match(listLine(panel, "agents-user"), //);
+	assert.match(listLine(panel, "agents-user"), / agents-user/);
 	assert.doesNotMatch(listLine(panel, "agents-user"), /ⓤ/);
 	assert.ok(lines.every((line) => visibleWidth(line) === 48));
 });
@@ -869,7 +870,7 @@ test("filter input requires slash, hides the trigger, and treats hjkl as query t
 	for (const character of "abc") panel.handleInput(character);
 	let output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+\/ to filter skills/);
+	assert.match(filterHeaderLine(panel), /\/ filter all skills\s+\[\/\] source/);
 	assert.match(output, /agents-both/);
 
 	panel.handleInput("/");
@@ -878,8 +879,9 @@ test("filter input requires slash, hides the trigger, and treats hjkl as query t
 	output = terminalText(rendered);
 
 	assert.ok(rendered.includes(CURSOR_MARKER));
-	assert.match(output, /Filter\s+skill/);
-	assert.doesNotMatch(output, /Filter\s+\/skill/);
+	assert.match(filterHeaderLine(panel), /skill/);
+	assert.doesNotMatch(filterHeaderLine(panel), /\/skill/);
+  assert.match(output, /Skills 2 · model 2 · ⓤ 0 · ⊘ 0/);
 	assert.match(output, /cli-skill/);
 	assert.match(output, /Type filter\s+←\/→ cursor\s+↑\/↓ select\s+Ctrl\+U clear\s+Ctrl\+W word/);
 });
@@ -896,15 +898,15 @@ test("filter input supports cursor editing, paste, and command-line deletion key
 	panel.handleInput("\x1b[F");
 	panel.handleInput("\x1b[200~-中文\x1b[201~");
 	let output = terminalText(panel.render(120).join("\n"));
-	assert.match(output, /Filter\s+skill-中文/);
+	assert.match(filterHeaderLine(panel), /skill-中文/);
 
 	panel.handleInput("\x15");
 	panel.handleInput("alpha beta");
 	panel.handleInput("\x17");
 	panel.handleInput("ENTER");
 	output = terminalText(panel.render(120).join("\n"));
-	assert.match(output, /Filter\s+alpha/);
-	assert.doesNotMatch(output, /beta|Filter\s+\//);
+	assert.match(filterHeaderLine(panel), /\/ alpha\s+\[\/\] source/);
+	assert.doesNotMatch(output, /beta/);
 
 	panel.handleInput("/");
 	panel.handleInput("x");
@@ -913,7 +915,7 @@ test("filter input supports cursor editing, paste, and command-line deletion key
 	panel.handleInput("skill");
 	panel.handleInput("ENTER");
 	output = terminalText(panel.render(120).join("\n"));
-	assert.match(output, /Filter\s+skill/);
+	assert.match(filterHeaderLine(panel), /\/ skill\s+\[\/\] source/);
 	assert.match(output, /cli-skill/);
 });
 
@@ -950,9 +952,16 @@ test("[/] cycle source filters in both directions", () => {
 	const panel = makePanel();
 	panel.render(120);
 
-	for (const expected of [".agents 3", "Package 1", "Settings 1", "CLI 1", "ALL 6"]) {
+	for (const [expected, scope] of [
+		[".agents 3", ".agents"],
+		["Package 1", "Package"],
+		["Settings 1", "Settings"],
+		["CLI 1", "CLI"],
+		["ALL 6", "all skills"],
+	]) {
 		panel.handleInput("]");
 		assert.match(panel.render(120).join("\n"), new RegExp(`\\[${expected}\\]`));
+		assert.match(filterHeaderLine(panel), new RegExp(`/ filter ${scope === "all skills" ? scope : `within ${scope}`}`));
 	}
 	panel.handleInput("[");
 	assert.match(panel.render(120).join("\n"), /\[CLI 1\]/);
@@ -969,21 +978,21 @@ test("Enter keeps a filter while Esc cancels editing, clears the filter, then cl
 	panel.handleInput("ENTER");
 	let output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+skill/);
-	assert.doesNotMatch(output, /Filter\s+\/skill/);
+	assert.match(filterHeaderLine(panel), /\/ skill\s+\[\/\] source/);
+	assert.doesNotMatch(filterHeaderLine(panel), /\/skill/);
 	assert.match(output, /j\/k select\s+h\/l focus\s+\[\/\] source\s+\/ filter/);
 
 	panel.handleInput("/");
 	panel.handleInput("x");
-	assert.match(terminalText(panel.render(120).join("\n")), /Filter\s+skillx/);
+	assert.match(filterHeaderLine(panel), /skillx/);
 	panel.handleInput("ESC");
 	output = terminalText(panel.render(120).join("\n"));
-	assert.match(output, /Filter\s+skill/);
-	assert.doesNotMatch(output, /skillx|Filter\s+\/skill/);
+	assert.match(filterHeaderLine(panel), /\/ skill\s+\[\/\] source/);
+	assert.doesNotMatch(output, /skillx/);
 
 	panel.handleInput("ESC");
 	output = terminalText(panel.render(120).join("\n"));
-	assert.match(output, /Filter\s+\/ to filter skills/);
+	assert.match(filterHeaderLine(panel), /\/ filter all skills\s+\[\/\] source/);
 	assert.equal(result, undefined);
 
 	panel.handleInput("ESC");
@@ -999,8 +1008,8 @@ test("filter input takes precedence over focus and source shortcuts", () => {
 	for (const character of "hl[] ?") panel.handleInput(character);
 	const output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Sources\s+ALL 6\s+\[\.agents 3\]/);
-	assert.match(output, /Filter\s+hl\[\] \?/);
+	assert.match(output, /ALL 6\s+\[\.agents 3\]/);
+	assert.match(filterHeaderLine(panel), /hl\[\] \?/);
 	assert.match(output, /Type filter\s+←\/→ cursor\s+↑\/↓ select/);
 	assert.doesNotMatch(output, /Skill routes and policy|Pending 1/);
 });
@@ -1012,7 +1021,7 @@ test("Space toggles between Unblocked and Blocked", () => {
 	let output = panel.render(120).join("\n");
 	assert.match(listLine(panel, "agents-both"), /Pending/);
 	assert.doesNotMatch(listLine(panel, "agents-both"), /⊘/);
-	assert.match(output, /Policy\s+⊘ 3\s+△ 1 Pending/);
+  assert.match(output, /Skills 6 · model 5 · ⓤ 1 · ⊘ 3 · △ 1/);
 	assert.match(output, /Unblocked → Blocked · Pending 1/);
 
 	panel.handleInput(" ");
@@ -1193,18 +1202,28 @@ test("Space does not change policy while Preview is focused", () => {
 test("panel wraps the compact header and guide within narrow terminals", () => {
 	const width = 48;
 	const panel = makePanel();
+	panel.focused = true;
 	let lines = panel.render(width);
 	let output = terminalText(lines.join("\n"));
 	assert.ok(lines.every((line) => visibleWidth(line) === width));
-	for (const expected of ["Native", "Policy", "Sources", ".agents 3", "Package 1", "Filter", "/ to filter skills"]) {
+	for (const expected of [
+		"[ALL 6]",
+		".agents 3",
+		"Package 1",
+		"11 empty sources",
+		"/ filter all skills",
+		"[/] source",
+    "Skills 6 · model 5 · ⓤ 1 · ⊘ 2",
+	]) {
 		assert.ok(output.includes(expected), `missing narrow header content: ${expected}`);
 	}
+	assert.doesNotMatch(output, /Native\s+5 Model \+ \/skill|Policy\s+⊘ 2|Sources\s+\[ALL 6\]|Filter\s+\//);
 
 	panel.handleInput("/");
 	lines = panel.render(width);
 	output = terminalText(lines.join("\n"));
 	assert.ok(lines.every((line) => visibleWidth(line) === width));
-	assert.doesNotMatch(output, /Filter\s+\//);
+	assert.doesNotMatch(filterHeaderLine(panel, width), /\[\/\] source/);
 	assert.match(output, /Type filter\s+Enter keep\s+Esc cancel/);
 
 	panel.handleInput("ESC");
@@ -1233,8 +1252,8 @@ test("search fuzzy-matches non-contiguous name segments", () => {
 	for (const character of "my-html") panel.handleInput(character);
 	const output = terminalText(panel.render(120).join("\n"));
 
-	assert.match(output, /Filter\s+my-html/);
-	assert.doesNotMatch(output, /Filter\s+\/my-html/);
+	assert.match(filterHeaderLine(panel), /my-html/);
+	assert.doesNotMatch(filterHeaderLine(panel), /\/my-html/);
 	assert.match(output, /my-pptx-html-local/);
 	assert.doesNotMatch(output, /my-pptx-local/);
 	assert.doesNotMatch(output, /No skills match/);

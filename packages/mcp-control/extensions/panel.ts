@@ -229,10 +229,7 @@ export class McpControlPanel implements Component, Focusable {
 		const active = this.#activeTab();
 		return this.#snapshot.entries.filter((entry) => {
 			if (active !== "all" && entry.agentId !== active) return false;
-			return fuzzyMatch(
-				`${entry.agentLabel} ${entry.serverName} ${entry.sourceLabel} ${entry.path} ${entry.normalized.transport}`,
-				this.#query,
-			);
+			return fuzzyMatch(entry.serverName, this.#query);
 		});
 	}
 
@@ -347,6 +344,18 @@ export class McpControlPanel implements Component, Focusable {
 		return `${clipped}${" ".repeat(Math.max(0, width - visibleWidth(clipped)))}`;
 	}
 
+	#selectedBackground(content: string): string {
+		return content
+			.split("\x1b[0m")
+			.map((segment) => this.#theme.bg("selectedBg", segment))
+			.join("\x1b[0m");
+	}
+
+	#paneContent(content: string, width: number, selected = false): string {
+		const padded = this.#pad(` ${content}`, width);
+		return selected ? this.#selectedBackground(padded) : padded;
+	}
+
 	#border(left: string, middle: string, right: string, innerWidth: number): string {
 		return this.#theme.fg("borderMuted", `${left}${middle.repeat(Math.max(0, innerWidth))}${right}`);
 	}
@@ -438,7 +447,7 @@ export class McpControlPanel implements Component, Focusable {
 		return visible;
 	}
 
-	#renderList(width: number, height: number): string[] {
+	#renderList(width: number, height: number, focused: boolean): string[] {
 		const rows = this.#visibleRows(height);
 		if (rows.length === 0) {
 			const agent = this.#snapshot.agents.find((candidate) => candidate.id === this.#activeTab());
@@ -460,9 +469,10 @@ export class McpControlPanel implements Component, Focusable {
 			const selected = rowKey === selectedKey;
 			if (row.type === "group") {
 				const label = `${row.label} (${row.count})`;
-				return this.#pad(
-					` ${selected ? this.#theme.fg("accent", this.#theme.bold(label)) : this.#theme.fg("muted", label)}`,
+				return this.#paneContent(
+					selected ? this.#theme.fg("accent", this.#theme.bold(label)) : this.#theme.fg("muted", label),
 					width,
+					selected && focused,
 				);
 			}
 			const iconColor =
@@ -478,7 +488,7 @@ export class McpControlPanel implements Component, Focusable {
 					: this.#theme.fg("text", row.entry.serverName);
 			const scope = this.#theme.fg("dim", row.entry.level === "global" ? "G" : row.entry.level === "project" ? "P" : "T");
 			const line = `  ${this.#theme.fg(iconColor, statusIcon(row.entry))} ${label}  ${scope}`;
-			return this.#pad(` ${line}`, width);
+			return this.#paneContent(line, width, selected && focused);
 		});
 		while (output.length < height) output.push(" ".repeat(width));
 		return output.slice(0, height);
@@ -543,7 +553,7 @@ export class McpControlPanel implements Component, Focusable {
 			)}${this.#sectionSegment("Details", previewWidth, this.#focus === "preview")}${this.#theme.fg("borderMuted", "┤")}`,
 		);
 		const height = Math.max(6, Math.min(28, Math.floor(this.#tui.terminal.rows * 0.72) - lines.length - 3));
-		const left = this.#renderList(listWidth, height);
+		const left = this.#renderList(listWidth, height, this.#focus === "list");
 		const right = this.#renderPreview(previewWidth, height);
 		for (let index = 0; index < height; index++) lines.push(`${this.#theme.fg("borderMuted", "│")}${left[index]}${this.#theme.fg("borderMuted", "│")}${right[index]}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(`${this.#theme.fg("borderMuted", "├")}${this.#theme.fg("borderMuted", "─".repeat(listWidth))}${this.#theme.fg("borderMuted", "┴")}${this.#theme.fg("borderMuted", "─".repeat(previewWidth))}${this.#theme.fg("borderMuted", "┤")}`);
@@ -562,7 +572,7 @@ export class McpControlPanel implements Component, Focusable {
 		lines.push(...this.#headerLines(inner));
 		lines.push(this.#border("├", "─", "┤", inner));
 		const listHeight = Math.max(4, Math.min(12, Math.floor(this.#tui.terminal.rows * 0.36)));
-		for (const row of this.#renderList(inner, listHeight)) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
+		for (const row of this.#renderList(inner, listHeight, this.#focus === "list")) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);
 		lines.push(this.#border("├", "─", "┤", inner));
 		const previewHeight = Math.max(4, Math.min(10, Math.floor(this.#tui.terminal.rows * 0.28)));
 		for (const row of this.#renderPreview(inner, previewHeight)) lines.push(`${this.#theme.fg("borderMuted", "│")}${row}${this.#theme.fg("borderMuted", "│")}`);

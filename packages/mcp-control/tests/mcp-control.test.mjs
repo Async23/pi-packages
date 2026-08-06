@@ -473,6 +473,76 @@ test("panel shows zero-count Agent tabs but source cycling skips them", () => {
 	assert.equal(result.entryId, control.snapshot().entries[0].id);
 });
 
+test("selected MCP row uses the shared selected background while the list is focused", () => {
+	const piConfig = join(home, ".pi", "agent", "mcp.json");
+	const { store, options } = setup({
+		[piConfig]: '{"mcpServers":{"first":{"command":"first"},"second":{"command":"second"}}}\n',
+	});
+	const control = new McpControl({ ...options, fileStore: store });
+	const selectedStart = "<selectedBg>";
+	const selectedEnd = "</selectedBg>";
+	const selectedTheme = {
+		fg: (_color, text) => text,
+		bg: (color, text) => color === "selectedBg" ? `${selectedStart}${text}${selectedEnd}` : text,
+		bold: (text) => text,
+	};
+	const panel = new McpControlPanel({
+		tui: { terminal: { rows: 80 }, requestRender() {} },
+		theme: selectedTheme,
+		keybindings: {
+			matches: (data, action) =>
+				(action === "tui.select.up" && data === "UP") ||
+				(action === "tui.select.down" && data === "DOWN") ||
+				(action === "tui.select.confirm" && data === "ENTER") ||
+				(action === "tui.select.cancel" && data === "ESC"),
+		},
+		snapshot: control.snapshot(),
+		onDone() {},
+	});
+
+	let output = panel.render(120).join("\n");
+	assert.match(output, /<selectedBg>[^\n]*first[^\n]*<\/selectedBg>/);
+	assert.doesNotMatch(output, /<selectedBg>[^\n]*second[^\n]*<\/selectedBg>/);
+
+	panel.handleInput("j");
+	output = panel.render(120).join("\n");
+	assert.match(output, /<selectedBg>[^\n]*second[^\n]*<\/selectedBg>/);
+
+	panel.handleInput("l");
+	assert.doesNotMatch(panel.render(120).join("\n"), /<selectedBg>/);
+});
+
+test("filter narrows the MCP list to matching server names", () => {
+	const piConfig = join(home, ".pi", "agent", "mcp.json");
+	const { store, options } = setup({
+		[piConfig]: '{"mcpServers":{"chrome-devtools":{"command":"chrome"},"read-my-chatgpt":{"command":"read"}}}\n',
+	});
+	const control = new McpControl({ ...options, fileStore: store });
+	const panel = new McpControlPanel({
+		tui: { terminal: { rows: 80 }, requestRender() {} },
+		theme: plainTheme,
+		keybindings: {
+			matches: (data, action) =>
+				(action === "tui.select.up" && data === "UP") ||
+				(action === "tui.select.down" && data === "DOWN") ||
+				(action === "tui.select.confirm" && data === "ENTER") ||
+				(action === "tui.select.cancel" && data === "ESC"),
+		},
+		snapshot: control.snapshot(),
+		onDone() {},
+	});
+
+	panel.focused = true;
+	panel.render(120);
+	panel.handleInput("/");
+	for (const character of "read") panel.handleInput(character);
+	panel.handleInput("ENTER");
+
+	const output = panel.render(120).join("\n");
+	assert.match(output, /read-my-chatgpt/);
+	assert.doesNotMatch(output, /chrome-devtools/);
+});
+
 test("j/k keep the current Agent heading visible while moving one MCP entry at a time", () => {
 	const piConfig = join(home, ".pi", "agent", "mcp.json");
 	const codexConfig = join(home, ".codex", "config.toml");
