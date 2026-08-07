@@ -1,0 +1,52 @@
+{
+  "name": "pi-sessions-studio",
+  "version": "1.0.0",
+  "description": "Pi 的本地会话可观测与复盘工作台，提供 /studio Extension 与浏览器分析界面",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "sessions",
+    "observability"
+  ],
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "extensions/",
+    "shared/",
+    "server/",
+    "web/dist/",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/index.js"
+    ]
+  },
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,magenta \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
+    "build": "npm --prefix web run build",
+    "test:json-wheel": "node scripts/check-json-wheel.mjs",
+    "test:session-controls": "node scripts/check-session-controls.mjs",
+    "test:special-entries": "node scripts/check-special-entries.mjs",
+    "test:visual-layout": "node scripts/check-visual-layout.mjs",
+    "test:pi-package": "node scripts/check-pi-package.mjs",
+    "start": "node server/src/index.js",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "compression": "^1.7.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "allowScripts": {
+    "esbuild@0.21.5": true
+  }
+}
