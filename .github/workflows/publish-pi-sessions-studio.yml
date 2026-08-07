@@ -1,0 +1,32 @@
+name: Publish pi-sessions-studio to npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: publish-pi-sessions-studio
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Use an npm version with Trusted Publishing support
+        run: npm install --global npm@11.17.0
+      - name: Install package dependencies
+        run: npm ci --prefix packages/pi-sessions-studio
+      - name: Check package contents
+        run: npm pack --workspace packages/pi-sessions-studio --dry-run
+      - name: Publish package
+        run: npm publish --workspace packages/pi-sessions-studio

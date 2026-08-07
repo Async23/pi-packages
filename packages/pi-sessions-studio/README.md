@@ -1,4 +1,4 @@
-# Pi Sessions Studio
+# @async23/pi-sessions-studio
 
 Pi 的本地会话可观测与复盘工作台。它通过 `/studio` 从 Pi 当前会话进入浏览器，将 `~/.pi/agent/sessions` 中的分支、工具调用、上下文、Token 与成本还原成可检索、可解释、可导出的工作记录。
 
@@ -30,13 +30,8 @@ Pi TUI ── /studio ──► Pi Package Extension
 
 ## 作为 Pi Package 使用（推荐）
 
-当前仓库可作为本地 Pi Package 安装：
-
 ```bash
-cd /path/to/pi-sessions-studio
-npm install
-npm run build
-pi install "$(pwd)"
+pi install npm:@async23/pi-sessions-studio
 ```
 
 安装后重启 Pi 或执行 `/reload`，然后使用：
@@ -50,10 +45,13 @@ pi install "$(pwd)"
 
 Extension 只在用户执行 `/studio` 时启动服务；同一 Session 数据目录会复用同一个后台进程。服务绑定 `127.0.0.1`，运行状态和日志保存在 `PI_CODING_AGENT_DIR`（默认 `~/.pi/agent`）下的 `pi-sessions-studio/`。
 
-发布到 npm 后，可改用：
+开发时也可从 monorepo 源码安装：
 
 ```bash
-pi install npm:pi-sessions-studio
+cd packages/pi-sessions-studio
+npm install
+npm run build
+pi install "$(pwd)"
 ```
 
 ## 独立运行与开发

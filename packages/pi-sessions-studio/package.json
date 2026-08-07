@@ -1,14 +1,24 @@
 {
-  "name": "pi-sessions-studio",
+  "name": "@async23/pi-sessions-studio",
   "version": "1.0.0",
   "description": "Pi 的本地会话可观测与复盘工作台，提供 /studio Extension 与浏览器分析界面",
+  "type": "module",
+  "license": "MIT",
   "keywords": [
     "pi-package",
-    "pi",
+    "pi-coding-agent",
     "sessions",
     "observability"
   ],
-  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Async23/pi-packages.git",
+    "directory": "packages/pi-sessions-studio"
+  },
+  "homepage": "https://github.com/Async23/pi-packages/tree/main/packages/pi-sessions-studio#readme",
+  "bugs": {
+    "url": "https://github.com/Async23/pi-packages/issues"
+  },
   "engines": {
     "node": ">=20"
   },
@@ -17,8 +27,12 @@
     "shared/",
     "server/",
     "web/dist/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": [
       "./extensions/index.js"
