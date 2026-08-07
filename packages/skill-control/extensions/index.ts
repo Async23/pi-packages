@@ -773,8 +773,8 @@ export class SkillControlPanel implements Component, Focusable {
 		return this.#initialBlockedPaths.has(item.path) !== this.#blockedPaths.has(item.path);
 	}
 
-	#rowPolicyStatus(item: SkillListItem): "Blocked" | "Pending" | undefined {
-		if (this.#isPolicyPending(item)) return "Pending";
+	#rowPolicyStatus(item: SkillListItem): "Blocked" | "Unsaved" | undefined {
+		if (this.#isPolicyPending(item)) return "Unsaved";
 		return this.#isBlocked(item) ? "Blocked" : undefined;
 	}
 
@@ -1499,16 +1499,17 @@ export class SkillControlPanel implements Component, Focusable {
 			const nativeState = this.#nativeStateFor(row.item);
 			const blocked = this.#isBlocked(row.item);
 			const status = this.#rowPolicyStatus(row.item);
-			const icon = this.#nativeMarker(nativeState);
+			const markers = [
+				this.#nativeMarker(nativeState),
+				status === "Blocked" ? this.#theme.fg("warning", BLOCKED_ICON) : "",
+			].filter((marker) => marker.length > 0);
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
 				: blocked
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
-			const badge = status
-				? this.#theme.fg("warning", status === "Pending" ? status : BLOCKED_ICON)
-				: "";
-			const left = icon ? `    ${icon} ${label}` : `    ${label}`;
+			const badge = status === "Unsaved" ? this.#theme.fg("warning", status) : "";
+			const left = markers.length > 0 ? `    ${markers.join(" ")} ${label}` : `    ${label}`;
 			const contentWidth = Math.max(0, width - 2);
 			const content = badge ? this.#joined(left, badge, contentWidth) : left;
 			return this.#paneContent(content, width, selected && focused);

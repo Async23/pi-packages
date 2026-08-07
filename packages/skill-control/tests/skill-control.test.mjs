@@ -540,22 +540,29 @@ test("Skill rows use a uniform child indent beneath their group headings", () =>
 			makePanelItem("command-only", "agents", ".agents (~/.agents/skills)", {
 				nativeAvailability: { modelVisible: false, commandAvailable: true },
 			}),
+			makePanelItem("agents-project", "agents", ".agents (~/.agents/skills)"),
 		],
 	});
 	const lines = wideList(panel).split("\n");
 	const groupLine = lines.find((line) => line.includes(".agents (~/.agents/skills)"));
 	const normalSkillLine = lines.find((line) => line.includes("alpha"));
 	const commandOnlySkillLine = lines.find((line) => line.includes("command-only"));
+	const blockedSkillLine = lines.find((line) => line.includes("agents-project"));
 	assert.ok(groupLine);
 	assert.ok(normalSkillLine);
 	assert.ok(commandOnlySkillLine);
+	assert.ok(blockedSkillLine);
 	const groupLabelColumn = groupLine.indexOf(".agents");
 	const normalSkillLabelColumn = normalSkillLine.indexOf("alpha");
 	const commandOnlySkillIconColumn = commandOnlySkillLine.indexOf(FALLBACK_USER_ICON);
 	const commandOnlySkillLabelColumn = commandOnlySkillLine.indexOf("command-only");
+	const blockedSkillIconColumn = blockedSkillLine.indexOf(BLOCKED_ICON);
+	const blockedSkillLabelColumn = blockedSkillLine.indexOf("agents-project");
 	assert.equal(normalSkillLabelColumn, groupLabelColumn + 2);
 	assert.equal(commandOnlySkillIconColumn, normalSkillLabelColumn);
 	assert.equal(commandOnlySkillLabelColumn, commandOnlySkillIconColumn + 2);
+	assert.equal(blockedSkillIconColumn, normalSkillLabelColumn);
+	assert.equal(blockedSkillLabelColumn, blockedSkillIconColumn + 2);
 });
 
 test("selected background survives ANSI resets introduced by long-name truncation", () => {
@@ -750,13 +757,13 @@ test("Skill rows show only the user-only and blocked exceptions", () => {
 	const panel = makePanel();
 	panel.render(120);
 
-	assert.doesNotMatch(listLine(panel, "agents-both"), /[ⓤ⊘]|\b(?:Unblocked|Blocked|Pending)\b/);
-	assert.match(listLine(panel, "agents-user"), /ⓤ/);
-	assert.doesNotMatch(listLine(panel, "agents-user"), /[⊘]|\b(?:Unblocked|Blocked|Pending)\b/);
-	assert.match(listLine(panel, "agents-project"), /⊘/);
-	assert.match(listLine(panel, "settings-model"), /⊘/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /[ⓤ⊘]|\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
+	assert.match(listLine(panel, "agents-user"), /ⓤ agents-user/);
+	assert.doesNotMatch(listLine(panel, "agents-user"), /[⊘]|\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
+	assert.match(listLine(panel, "agents-project"), /⊘ agents-project/);
+	assert.match(listLine(panel, "settings-model"), /⊘ settings-model/);
 	assert.doesNotMatch(listLine(panel, "agents-project"), /\bBlocked\b/);
-	assert.doesNotMatch(wideList(panel), /Override|Pending/);
+	assert.doesNotMatch(wideList(panel), /Override|Pending|Unsaved/);
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Model \+ \/skill · Unblocked/);
 
 	panel.handleInput("j");
@@ -764,10 +771,11 @@ test("Skill rows show only the user-only and blocked exceptions", () => {
 	panel.handleInput("j");
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Blocked · Blocked by policy/);
 	panel.handleInput(" ");
-	assert.match(listLine(panel, "agents-project"), /Pending/);
+	assert.match(listLine(panel, "agents-project"), /Unsaved/);
+	assert.doesNotMatch(listLine(panel, "agents-project"), /⊘/);
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Model \+ \/skill · Pending unblock/);
 	panel.handleInput("u");
-	assert.match(listLine(panel, "agents-project"), /⊘/);
+	assert.match(listLine(panel, "agents-project"), /⊘ agents-project/);
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Blocked · Blocked by policy/);
 });
 
@@ -1019,14 +1027,14 @@ test("Space toggles between Unblocked and Blocked", () => {
 	panel.render(120);
 	panel.handleInput(" ");
 	let output = panel.render(120).join("\n");
-	assert.match(listLine(panel, "agents-both"), /Pending/);
+	assert.match(listLine(panel, "agents-both"), /Unsaved/);
 	assert.doesNotMatch(listLine(panel, "agents-both"), /⊘/);
   assert.match(output, /Skills 6 · model 5 · ⓤ 1 · ⊘ 3 · △ 1/);
 	assert.match(output, /Unblocked → Blocked · Pending 1/);
 
 	panel.handleInput(" ");
 	output = panel.render(120).join("\n");
-	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending)\b/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 	assert.match(output, /Blocked → Unblocked · No pending changes/);
 });
 
@@ -1037,23 +1045,23 @@ test("Shift+Space also toggles while r unblocks and u undoes", () => {
 	panel.handleInput("\x1b[32;2u");
 	let output = panel.render(120).join("\n");
 	assert.match(output, /Unblocked → Blocked · Pending 1/);
-	assert.match(listLine(panel, "agents-both"), /Pending/);
+	assert.match(listLine(panel, "agents-both"), /Unsaved/);
 
 	panel.handleInput("u");
 	output = panel.render(120).join("\n");
 	assert.match(output, /Undo agents-both: Blocked → Unblocked/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending)\b/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 
 	panel.handleInput(" ");
 	panel.handleInput("r");
 	output = panel.render(120).join("\n");
 	assert.match(output, /Blocked → Unblocked · No pending changes/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending)\b/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 
 	panel.handleInput("u");
 	output = panel.render(120).join("\n");
 	assert.match(output, /Undo agents-both: Unblocked → Blocked/);
-	assert.match(listLine(panel, "agents-both"), /Pending/);
+	assert.match(listLine(panel, "agents-both"), /Unsaved/);
 });
 
 test("unblocking removes a saved blocked path", () => {
@@ -1068,7 +1076,8 @@ test("unblocking removes a saved blocked path", () => {
 	panel.handleInput(" ");
 
 	const output = panel.render(120).join("\n");
-	assert.match(listLine(panel, "settings-model"), /Pending/);
+	assert.match(listLine(panel, "settings-model"), /Unsaved/);
+	assert.doesNotMatch(listLine(panel, "settings-model"), /⊘/);
 	assert.match(output, /Blocked → Unblocked · Pending 1/);
 
 	panel.handleInput("\x13");
@@ -1105,7 +1114,7 @@ test("Ctrl+S applies changes without closing and establishes a new editing basel
 	let output = panel.render(120).join("\n");
 	assert.doesNotMatch(output, /Pending 1/);
 	assert.match(output, /Applied 1 Skill change/);
-	assert.match(listLine(panel, "agents-both"), /⊘/);
+	assert.match(listLine(panel, "agents-both"), /⊘ agents-both/);
 
 	panel.handleInput("j");
 	panel.handleInput(" ");
@@ -1116,7 +1125,7 @@ test("Ctrl+S applies changes without closing and establishes a new editing basel
 	assert.equal(applied.length, 2);
 	assert.equal(applied[1].has("/skills/agents-user/SKILL.md"), true);
 	assert.doesNotMatch(panel.render(120).join("\n"), /Pending 1/);
-	assert.match(listLine(panel, "agents-user"), /ⓤ.*⊘/);
+	assert.match(listLine(panel, "agents-user"), /ⓤ ⊘ agents-user/);
 
 	panel.handleInput("ESC");
 	assert.deepEqual(closeResult, { action: "close" });
@@ -1140,7 +1149,7 @@ test("Ctrl+S keeps pending changes when applying fails", () => {
 	const output = panel.render(120).join("\n");
 	assert.equal(closeResult, undefined);
 	assert.equal(applyAttempts, 1);
-	assert.match(listLine(panel, "agents-both"), /Pending/);
+	assert.match(listLine(panel, "agents-both"), /Unsaved/);
 	assert.match(output, /Could not write Skill control configuration/);
 	panel.handleInput("ESC");
 	assert.match(panel.render(120).join("\n"), /Discard 1 pending change/);
@@ -1183,7 +1192,7 @@ test("the routes guide separates native invocation from blocking policy", () => 
 	panel.handleInput("ESC");
 	output = panel.render(120).join("\n");
 	assert.match(listLine(panel, "agents-both"), /agents-both/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending)\b/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 });
 
 test("Space does not change policy while Preview is focused", () => {
@@ -1195,7 +1204,7 @@ test("Space does not change policy while Preview is focused", () => {
 	const output = panel.render(120).join("\n");
 
 	assert.match(listLine(panel, "agents-both"), /agents-both/);
-	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending)\b/);
+	assert.doesNotMatch(listLine(panel, "agents-both"), /\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 	assert.doesNotMatch(output, /Pending 1/);
 });
 
