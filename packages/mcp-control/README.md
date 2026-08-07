@@ -4,9 +4,17 @@ A Pi extension for discovering, editing, connecting, and inspecting MCP servers 
 
 `/mcp` follows the interaction style of `@async23/pi-skill-control`: every known Agent stays visible as a tab, non-empty tabs appear first, zero-count tabs remain dimmed, and `ALL` stays grouped by the actual Agent. A server named `github` in Claude, Codex, and Cursor is always shown as three independent source entries. It is never flattened or deduplicated by name, command, or URL.
 
+## Install
+
+```bash
+pi install npm:@async23/pi-mcp-control
+```
+
+Restart Pi after installation, or run `/reload` in an existing session.
+
 ## Local development
 
-This package has not been published from this repository. Run it directly:
+Run it directly from this repository:
 
 ```bash
 pi --no-extensions -e ./packages/mcp-control

@@ -2,9 +2,17 @@
 
 A Pi extension for inspecting and controlling the Tools exposed to the LLM, with an independent selection for every Session Branch.
 
+## Install
+
+```bash
+pi install npm:@async23/pi-tool-control
+```
+
+Restart Pi after installation, or run `/reload` in an existing session.
+
 ## Local development
 
-This package has not been published from this repository. Run it directly:
+Run it directly from this repository:
 
 ```bash
 pi --no-extensions -e ./packages/tool-control
