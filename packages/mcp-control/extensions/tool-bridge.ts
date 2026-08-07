@@ -177,15 +177,11 @@ export class PiToolBridge {
 	}
 
 	#claimNames(claims: readonly ToolNameClaim[]): void {
-		const registeredNames = new Set(this.#pi.getAllTools?.().map((tool) => tool.name) ?? []);
 		const stagedOwners = new Map(this.#nameOwners);
 		for (const claim of claims) {
 			const owner = stagedOwners.get(claim.name);
 			if (owner && owner !== claim.identity) {
 				throw new Error(`MCP Tool Name collision: '${claim.name}' maps to multiple MCP primitives.`);
-			}
-			if (!owner && registeredNames.has(claim.name)) {
-				throw new Error(`MCP Tool Name collision: '${claim.name}' is already registered outside mcp-control.`);
 			}
 			stagedOwners.set(claim.name, claim.identity);
 		}

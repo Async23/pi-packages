@@ -438,7 +438,7 @@ test("PiToolBridge publishes replace-all v1 Tool Inventory snapshots with availa
 	assert.equal(handlers.has(MCP_TOOL_INVENTORY_REQUEST_CHANNEL), false);
 });
 
-test("PiToolBridge rejects Tool Name collisions before registering any catalog Tool", () => {
+test("PiToolBridge leaves global Tool Name collision handling to Pi", () => {
 	let runtimeListener;
 	const runtime = {
 		subscribe(listener) {
@@ -458,12 +458,14 @@ test("PiToolBridge rejects Tool Name collisions before registering any catalog T
 	};
 	const occupiedName = piToolName(definition, "click");
 	const registered = [];
+	let getAllToolsCalls = 0;
 	let activeTools = ["read"];
 	const pi = {
 		registerTool(tool) {
 			registered.push(tool.name);
 		},
 		getAllTools() {
+			getAllToolsCalls += 1;
 			return [{ name: occupiedName }];
 		},
 		getActiveTools() {
@@ -475,7 +477,7 @@ test("PiToolBridge rejects Tool Name collisions before registering any catalog T
 	};
 	const bridge = new PiToolBridge(pi, runtime);
 	bridge.track(definition);
-	assert.throws(
+	assert.doesNotThrow(
 		() => runtimeListener("instance-1", { state: "ready" }, {
 			tools: [
 				{ name: "safe", inputSchema: { type: "object" } },
@@ -485,10 +487,10 @@ test("PiToolBridge rejects Tool Name collisions before registering any catalog T
 			resourceTemplates: [],
 			prompts: [],
 		}),
-		/Tool Name collision/,
 	);
-	assert.deepEqual(registered, []);
-	assert.deepEqual(activeTools, ["read"]);
+	assert.equal(getAllToolsCalls, 0);
+	assert.deepEqual(registered, [piToolName(definition, "safe"), occupiedName]);
+	assert.deepEqual(activeTools, ["read", piToolName(definition, "safe"), occupiedName]);
 	bridge.dispose();
 });
 
