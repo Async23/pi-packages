@@ -22,6 +22,7 @@ export type ToolSourceKind = "builtin" | "mcp" | "extension" | "sdk";
 export interface ToolCatalogItem {
 	tool: ToolInfo;
 	name: string;
+	displayName: string;
 	sourceKind: ToolSourceKind;
 	registrar: string;
 	groupKey: string;
@@ -146,6 +147,7 @@ export function buildToolCatalog(
 			items.push({
 				tool,
 				name: tool.name,
+				displayName: source.remoteName,
 				sourceKind: "mcp",
 				registrar: "@async23/pi-mcp-control",
 				groupKey: `mcp:${source.agentId}:${source.instanceId}`,
@@ -159,6 +161,7 @@ export function buildToolCatalog(
 			items.push({
 				tool,
 				name: tool.name,
+				displayName: tool.name,
 				sourceKind: "builtin",
 				registrar: "Pi",
 				groupKey: "builtin",
@@ -171,6 +174,7 @@ export function buildToolCatalog(
 			items.push({
 				tool,
 				name: tool.name,
+				displayName: tool.name,
 				sourceKind: "sdk",
 				registrar: "SDK",
 				groupKey: "sdk",
@@ -183,6 +187,7 @@ export function buildToolCatalog(
 		items.push({
 			tool,
 			name: tool.name,
+			displayName: tool.name,
 			sourceKind: "extension",
 			registrar,
 			groupKey: `extension:${tool.sourceInfo.path}`,
@@ -195,6 +200,7 @@ export function buildToolCatalog(
 		(left, right) =>
 			sourceOrder[left.sourceKind] - sourceOrder[right.sourceKind] ||
 			left.groupLabel.localeCompare(right.groupLabel) ||
+			left.displayName.localeCompare(right.displayName) ||
 			left.name.localeCompare(right.name),
 	);
 }

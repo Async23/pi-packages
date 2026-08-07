@@ -89,8 +89,8 @@ function terminalText(text) {
 }
 
 function panelItems() {
-	const mcpClick = "mcp_pi_chrome_click_12345678";
-	const mcpSearch = "mcp_pi_chrome_search_12345678";
+	const mcpClick = "click__12345678";
+	const mcpSearch = "search__abcdefgh";
 	const tools = [
 		tool("read", { description: "Read files", promptGuidelines: ["Prefer narrow reads"] }),
 		tool("write", { description: "Write files" }),
@@ -278,7 +278,7 @@ test("reconciliation preserves inactive preferences for temporarily missing Tool
 });
 
 test("applying visible changes preserves inactive preferences for unavailable MCP Tools", () => {
-	const mcpName = "mcp_pi_chrome_click_12345678";
+	const mcpName = "click__12345678";
 	const runtime = new FakeRuntime([tool("read"), tool(mcpName)]);
 	const snapshot = inventorySnapshot([inventoryItem(mcpName, { available: false, remoteName: "click" })]);
 	const controller = new ToolSelectionController(runtime, () => snapshot);
@@ -313,7 +313,7 @@ test("failed apply keeps the controller baseline unchanged so a retry can persis
 });
 
 test("MCP inactive preferences survive disconnect and are re-applied after reconnect", () => {
-	const mcpName = "mcp_pi_chrome_click_12345678";
+	const mcpName = "click__12345678";
 	const runtime = new FakeRuntime([tool("read"), tool(mcpName, { sourceInfo: sourceInfo("/mcp-control/index.ts") })]);
 	let snapshot = inventorySnapshot([inventoryItem(mcpName, { available: true, remoteName: "click" })]);
 	const controller = new ToolSelectionController(runtime, () => snapshot);
@@ -334,7 +334,7 @@ test("MCP inactive preferences survive disconnect and are re-applied after recon
 });
 
 test("MCP preference application preserves non-MCP state and skips no-op writes", () => {
-	const mcpName = "mcp_pi_chrome_click_12345678";
+	const mcpName = "click__12345678";
 	const runtime = new FakeRuntime([tool("read"), tool("write"), tool(mcpName)]);
 	const snapshot = inventorySnapshot([inventoryItem(mcpName, { remoteName: "click" })]);
 	const controller = new ToolSelectionController(runtime, () => snapshot);
@@ -351,7 +351,7 @@ test("MCP preference application preserves non-MCP state and skips no-op writes"
 });
 
 test("catalog classifies Built-in, MCP, Extension, and SDK sources and degrades without MCP metadata", () => {
-	const mcpName = "mcp_pi_chrome_click_12345678";
+	const mcpName = "click__12345678";
 	const tools = [
 		tool("read"),
 		tool(mcpName, { sourceInfo: sourceInfo("/repo/packages/mcp-control/extensions/index.ts") }),
@@ -361,6 +361,7 @@ test("catalog classifies Built-in, MCP, Extension, and SDK sources and degrades 
 	const snapshot = inventorySnapshot([inventoryItem(mcpName, { remoteName: "click" })]);
 	const catalog = buildToolCatalog(tools, snapshot);
 	assert.deepEqual(catalog.map((item) => item.sourceKind), ["builtin", "mcp", "extension", "sdk"]);
+	assert.deepEqual(catalog.map((item) => item.displayName), ["read", "click", "notify", "sdk_tool"]);
 	assert.equal(catalog[1].groupLabel, "MCP · Pi / chrome-devtools");
 	assert.equal(catalog[2].groupLabel, "Extension · notify");
 
@@ -435,7 +436,7 @@ test("Space stages an aligned transition and Ctrl+S applies all Pending changes 
 	assert.match(output, /Applied 1 Tool change/);
 });
 
-test("filter matches Tool Name only and group bulk actions affect only visible matches", () => {
+test("filter matches displayed and registered Tool Names while actions retain registered names", () => {
 	const { panel, getApplied } = makePanel({ inactiveToolNames: new Set() });
 	panel.render(120);
 	panel.handleInput("/");
@@ -446,17 +447,27 @@ test("filter matches Tool Name only and group bulk actions affect only visible m
 
 	panel.handleInput("ESC");
 	panel.handleInput("/");
+	for (const character of "abcdefgh") panel.handleInput(character);
+	panel.handleInput("ENTER");
+	output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /MCP · Pi \/ chrome-devtools \(1\/2\)/);
+	assert.match(wideList(panel), /search/);
+	assert.doesNotMatch(wideList(panel), /search__abcdefgh/);
+
+	panel.handleInput("ESC");
+	panel.handleInput("/");
 	for (const character of "click") panel.handleInput(character);
 	panel.handleInput("ENTER");
 	output = terminalText(panel.render(120).join("\n"));
 	assert.match(output, /MCP · Pi \/ chrome-devtools \(1\/2\)/);
-	assert.match(output, /mcp_pi_chrome_click_12345678/);
-	assert.doesNotMatch(wideList(panel), /mcp_pi_chrome_search_12345678/);
+	assert.match(wideList(panel), /click/);
+	assert.doesNotMatch(wideList(panel), /click__12345678/);
+	assert.doesNotMatch(wideList(panel), /search/);
 
 	panel.handleInput("k");
 	panel.handleInput("d");
 	panel.handleInput("\x13");
-	assert.deepEqual([...getApplied()], ["mcp_pi_chrome_click_12345678"]);
+	assert.deepEqual([...getApplied()], ["click__12345678"]);
 });
 
 test("group folding is transient and selected rows use selectedBg only while the list is focused", () => {
@@ -479,6 +490,30 @@ test("group folding is transient and selected rows use selectedBg only while the
 	assert.match(wideList(fresh), /\bread\b/);
 });
 
+test("k from a group heading wraps to a visible selected Tool at the end of an overflowing list", () => {
+	const names = Array.from({ length: 17 }, (_, index) => `tool_${String(index + 1).padStart(2, "0")}__12345678`);
+	const tools = names.map((name) => tool(name, {
+		sourceInfo: sourceInfo("/repo/packages/mcp-control/extensions/index.ts"),
+	}));
+	const snapshot = inventorySnapshot(names.map((name, index) => inventoryItem(name, {
+		remoteName: `tool_${String(index + 1).padStart(2, "0")}`,
+	})));
+	const selectedTheme = {
+		...plainTheme,
+		bg: (color, text) => color === "selectedBg" ? `<selected>${text}</selected>` : text,
+	};
+	const { panel } = makePanel({
+		items: buildToolCatalog(tools, snapshot),
+		theme: selectedTheme,
+		rows: 32,
+	});
+	panel.render(120);
+	panel.handleInput("k");
+	panel.handleInput("k");
+	assert.match(terminalText(panel.render(120).join("\n")), /Name\s+tool_17__12345678/);
+	assert.match(wideList(panel), /<selected>[^\n]*tool_17[^\n]*<\/selected>/);
+});
+
 test("wide and narrow panel layouts stay within the requested terminal width", () => {
 	for (const width of [36, 48, 72, 91, 92, 120]) {
 		const { panel } = makePanel();
@@ -493,7 +528,7 @@ test("extension restores branches, observes current state, and narrows Inventory
 	const commands = new Map();
 	const busHandlers = new Map();
 	const entries = [];
-	const mcpName = "mcp_pi_chrome_click_12345678";
+	const mcpName = "click__12345678";
 	const tools = [
 		tool("read"),
 		tool("write"),
@@ -568,7 +603,7 @@ test("extension restores branches, observes current state, and narrows Inventory
 	assert.deepEqual(active, ["write"]);
 	assert.match(wideList(openedPanel), /^\s{5}○ read/m);
 	assert.match(wideList(openedPanel), /^\s{5}● write/m);
-	assert.match(wideList(openedPanel), new RegExp(`^\\s{5}○ ${mcpName}`, "m"));
+	assert.match(wideList(openedPanel), /^\s{5}○ click/m);
 
 	context.sessionManager.getBranch = () => [customEntry({ version: 1, inactiveToolNames: ["read"] })];
 	await handlers.get("session_tree")[0]({ type: "session_tree" }, context);

@@ -36,25 +36,33 @@ export interface McpToolInventorySnapshotV1 {
 	tools: McpToolInventoryItemV1[];
 }
 
+interface ToolNameClaim {
+	name: string;
+	identity: string;
+}
+
+const MAX_PI_TOOL_NAME_LENGTH = 64;
+const TOOL_NAME_SUFFIX_LENGTH = 8;
+const TOOL_NAME_SEPARATOR = "__";
+
 function identifierPart(value: string, maxLength: number): string {
 	const normalized = value.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
-	return (normalized || "unnamed").slice(0, maxLength);
+	const shortened = normalized.slice(0, maxLength).replace(/_+$/g, "");
+	return shortened || "unnamed";
+}
+
+function compactToolName(readableName: string, identityKind: string, identity: unknown): string {
+	const suffix = stableId(identityKind, identity).split(":").at(-1)?.slice(0, TOOL_NAME_SUFFIX_LENGTH) ?? "unknown";
+	const maxReadableLength = MAX_PI_TOOL_NAME_LENGTH - TOOL_NAME_SEPARATOR.length - suffix.length;
+	return `${identifierPart(readableName, maxReadableLength)}${TOOL_NAME_SEPARATOR}${suffix}`;
 }
 
 export function piToolName(definition: RuntimeServerDefinition, remoteToolName: string): string {
-	const suffix = stableId("tool", { instanceId: definition.instanceId, remoteToolName }).split(":").at(-1)?.slice(0, 8) ?? "unknown";
-	const prefix = [
-		"mcp",
-		identifierPart(definition.agentId, 10),
-		identifierPart(definition.serverName, 15),
-		identifierPart(remoteToolName, 20),
-	].join("_");
-	return `${prefix.slice(0, 54)}_${suffix}`;
+	return compactToolName(remoteToolName, "tool", { instanceId: definition.instanceId, remoteToolName });
 }
 
 function resourceToolName(definition: RuntimeServerDefinition): string {
-	const suffix = stableId("resource-tool", definition.instanceId).split(":").at(-1)?.slice(0, 8) ?? "unknown";
-	return `mcp_${identifierPart(definition.agentId, 10)}_${identifierPart(definition.serverName, 24)}_resource_${suffix}`.slice(0, 64);
+	return compactToolName("read_resource", "resource-tool", definition.instanceId);
 }
 
 function toolSchema(tool: Tool): ReturnType<typeof Type.Unsafe> {
@@ -94,6 +102,7 @@ export class PiToolBridge {
 	readonly #invocationPolicy: McpInvocationPolicy;
 	readonly #instances = new Map<string, InstanceRegistration>();
 	readonly #allManagedNames = new Set<string>();
+	readonly #nameOwners = new Map<string, string>();
 	readonly #unsubscribe: () => void;
 	readonly #unsubscribeInventoryRequest: () => void;
 	#inventoryGeneration = 0;
@@ -167,9 +176,36 @@ export class PiToolBridge {
 		};
 	}
 
+	#claimNames(claims: readonly ToolNameClaim[]): void {
+		const registeredNames = new Set(this.#pi.getAllTools?.().map((tool) => tool.name) ?? []);
+		const stagedOwners = new Map(this.#nameOwners);
+		for (const claim of claims) {
+			const owner = stagedOwners.get(claim.name);
+			if (owner && owner !== claim.identity) {
+				throw new Error(`MCP Tool Name collision: '${claim.name}' maps to multiple MCP primitives.`);
+			}
+			if (!owner && registeredNames.has(claim.name)) {
+				throw new Error(`MCP Tool Name collision: '${claim.name}' is already registered outside mcp-control.`);
+			}
+			stagedOwners.set(claim.name, claim.identity);
+		}
+		for (const claim of claims) this.#nameOwners.set(claim.name, claim.identity);
+	}
+
 	#registerCatalog(instanceId: string, catalog: RuntimePrimitiveCatalog): void {
 		const registration = this.#instances.get(instanceId);
 		if (!registration) return;
+		const claims: ToolNameClaim[] = catalog.tools.map((remoteTool) => ({
+			name: piToolName(registration.definition, remoteTool.name),
+			identity: canonicalJson({ kind: "tool", instanceId, remoteName: remoteTool.name }),
+		}));
+		if (catalog.resources.length > 0 || catalog.resourceTemplates.length > 0) {
+			claims.push({
+				name: resourceToolName(registration.definition),
+				identity: canonicalJson({ kind: "resource", instanceId }),
+			});
+		}
+		this.#claimNames(claims);
 		const nextNames = new Set<string>();
 		for (const item of registration.inventory.values()) item.available = false;
 

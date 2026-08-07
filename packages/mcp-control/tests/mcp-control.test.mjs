@@ -324,8 +324,25 @@ test("runtime loads every primitive and keeps tool-level errors as results", asy
 	assert.equal(result.details.mcpIsError, true);
 	assert.match(result.content[0].text, /execution error/);
 	assert.deepEqual(calls, [{ name: "search", arguments: { query: "x" } }]);
-	assert.match(piToolName(definition, "search"), /^mcp_claude_shared_search_/);
+	assert.match(piToolName(definition, "search"), /^search__[A-Za-z0-9_-]{8}$/);
 	await runtime.disconnectAll();
+});
+
+test("Pi Tool names keep the remote name readable with a stable compact identity", () => {
+	const definition = {
+		instanceId: "instance-1",
+		agentId: "pi",
+		serverName: "chrome-devtools",
+	};
+	const name = piToolName(definition, "list_pages");
+	assert.match(name, /^list_pages__[A-Za-z0-9_-]{8}$/);
+	assert.equal(piToolName(definition, "list_pages"), name);
+	assert.notEqual(piToolName({ ...definition, instanceId: "instance-2" }, "list_pages"), name);
+	assert.match(
+		piToolName(definition, "performance_analyze_insight"),
+		/^performance_analyze_insight__[A-Za-z0-9_-]{8}$/,
+	);
+	assert.ok(piToolName(definition, "x".repeat(200)).length <= 64);
 });
 
 test("PiToolBridge publishes replace-all v1 Tool Inventory snapshots with availability", () => {
@@ -419,6 +436,60 @@ test("PiToolBridge publishes replace-all v1 Tool Inventory snapshots with availa
 	assert.deepEqual(activeTools, ["read"]);
 	bridge.dispose();
 	assert.equal(handlers.has(MCP_TOOL_INVENTORY_REQUEST_CHANNEL), false);
+});
+
+test("PiToolBridge rejects Tool Name collisions before registering any catalog Tool", () => {
+	let runtimeListener;
+	const runtime = {
+		subscribe(listener) {
+			runtimeListener = listener;
+			return () => undefined;
+		},
+	};
+	const definition = {
+		instanceId: "instance-1",
+		entryId: "entry-1",
+		agentId: "pi",
+		agentLabel: "Pi",
+		serverName: "chrome-devtools",
+		config: { command: "node" },
+		flavor: "generic",
+		cwd: projectRoot,
+	};
+	const occupiedName = piToolName(definition, "click");
+	const registered = [];
+	let activeTools = ["read"];
+	const pi = {
+		registerTool(tool) {
+			registered.push(tool.name);
+		},
+		getAllTools() {
+			return [{ name: occupiedName }];
+		},
+		getActiveTools() {
+			return [...activeTools];
+		},
+		setActiveTools(names) {
+			activeTools = [...names];
+		},
+	};
+	const bridge = new PiToolBridge(pi, runtime);
+	bridge.track(definition);
+	assert.throws(
+		() => runtimeListener("instance-1", { state: "ready" }, {
+			tools: [
+				{ name: "safe", inputSchema: { type: "object" } },
+				{ name: "click", inputSchema: { type: "object" } },
+			],
+			resources: [],
+			resourceTemplates: [],
+			prompts: [],
+		}),
+		/Tool Name collision/,
+	);
+	assert.deepEqual(registered, []);
+	assert.deepEqual(activeTools, ["read"]);
+	bridge.dispose();
 });
 
 const plainTheme = {

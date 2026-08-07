@@ -408,13 +408,13 @@ export class ToolControlPanel implements Component, Focusable {
 	#toggleCurrentItem(): void {
 		const item = this.#currentItem();
 		if (!item) return;
-		this.#recordChange(item.name, [item], !this.#inactiveToolNames.has(item.name));
+		this.#recordChange(item.displayName, [item], !this.#inactiveToolNames.has(item.name));
 	}
 
 	#setCurrentState(inactive: boolean): void {
 		const item = this.#currentItem();
 		if (item) {
-			this.#recordChange(item.name, [item], inactive);
+			this.#recordChange(item.displayName, [item], inactive);
 			return;
 		}
 		const group = this.#currentGroup();
@@ -477,7 +477,9 @@ export class ToolControlPanel implements Component, Focusable {
 	}
 
 	#filteredItems(): ToolCatalogItem[] {
-		return this.#sourceItems().filter((item) => fuzzyMatch(item.name, this.#query));
+		return this.#sourceItems().filter(
+			(item) => fuzzyMatch(item.displayName, this.#query) || fuzzyMatch(item.name, this.#query),
+		);
 	}
 
 	#buildListRows(items: ToolCatalogItem[]): ListRow[] {
@@ -754,17 +756,23 @@ export class ToolControlPanel implements Component, Focusable {
 
 	#visibleListRows(height: number): ListRow[] {
 		const rows = this.#listRows();
+		if (height <= 0) return [];
 		if (rows.length <= height) return rows;
 		const selected = Math.max(0, Math.min(this.#selectedIndex, rows.length - 1));
-		const start = Math.max(0, Math.min(selected - Math.floor(height / 2), rows.length - height));
-		const visible = rows.slice(start, start + height);
-		if (start > 0 && visible[0]?.type === "item") {
+		const centeredStart = (windowHeight: number): number =>
+			Math.max(0, Math.min(selected - Math.floor(windowHeight / 2), rows.length - windowHeight));
+		let start = centeredStart(height);
+		if (start > 0 && rows[start]?.type === "item") {
+			if (height === 1) return rows[selected] ? [rows[selected]] : [];
+			const bodyHeight = height - 1;
+			start = centeredStart(bodyHeight);
+			if (start === 0 || rows[start]?.type === "group") return rows.slice(start, start + height);
 			let groupIndex = start - 1;
 			while (groupIndex >= 0 && rows[groupIndex]?.type !== "group") groupIndex -= 1;
 			const group = rows[groupIndex];
-			if (group?.type === "group") return [group, ...rows.slice(start, start + height - 1)];
+			if (group?.type === "group") return [group, ...rows.slice(start, start + bodyHeight)];
 		}
-		return visible;
+		return rows.slice(start, start + height);
 	}
 
 	#statusIcon(item: ToolCatalogItem): string {
@@ -813,10 +821,10 @@ export class ToolControlPanel implements Component, Focusable {
 			}
 			const inactive = this.#inactiveToolNames.has(row.item.name);
 			const label = isSelected
-				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
+				? this.#theme.fg("accent", this.#theme.bold(row.item.displayName))
 				: inactive
-					? this.#theme.fg("dim", row.item.name)
-					: this.#theme.fg("text", row.item.name);
+					? this.#theme.fg("dim", row.item.displayName)
+					: this.#theme.fg("text", row.item.displayName);
 			return this.#paneContent(`    ${this.#statusIcon(row.item)} ${label}`, width, isSelected && focused);
 		});
 		while (rendered.length < height) rendered.push(" ".repeat(width));

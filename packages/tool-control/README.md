@@ -61,7 +61,7 @@ Rows use a fixed-width state column, so every Tool Name remains aligned:
 
 The source tabs are `ALL`, Built-in, MCP, Extension, and SDK. `ALL` groups Built-in Tools together, MCP Tools under one-level `Agent / Server` headings, and other Tools by their Registrar. Groups start expanded and folding is kept only for the current panel lifetime.
 
-The Details pane shows the complete definition available to the LLM: Tool Name, current/after state, Registrar, Provider, scope, source path, description, Parameters JSON Schema, and Prompt Guidelines.
+MCP rows show the original remote primitive name, while their `Agent / Server` group identifies the source. The Details pane keeps the actual registered Pi Tool Name available to the LLM, together with current/after state, Registrar, Provider, scope, source path, description, Parameters JSON Schema, and Prompt Guidelines.
 
 Keyboard controls:
 
@@ -69,7 +69,7 @@ Keyboard controls:
 - Left/Right or `h`/`l`: fold/unfold a selected group, or switch focus for a selected Tool;
 - `Tab`: switch panes in wide layouts;
 - `[`/`]`: cycle non-empty source tabs; zero-count tabs remain visible but are skipped;
-- `/`: filter by Tool Name only using a case-insensitive non-contiguous match;
+- `/`: filter by displayed or registered Tool Name using a case-insensitive non-contiguous match;
 - Space: stage a selected Tool's opposite state;
 - `a` / `d`: stage activation/deactivation for one Tool or every currently visible Tool in a selected group;
 - `u`: undo the latest single or grouped staging operation;
