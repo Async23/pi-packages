@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import mcpControlExtension from "../extensions/index.ts";
@@ -113,27 +114,24 @@ test("project MCP files are not read or writable before Pi trusts the project", 
 	assert.equal(snapshot.sources.find((candidate) => candidate.path === projectConfig)?.writable, true);
 });
 
-test("public snapshot masks secrets, argument values, URL credentials, and query strings", () => {
+test("public snapshot exposes full source entry values while keeping the normalized summary sanitized", () => {
 	const piConfig = join(home, ".pi", "agent", "mcp.json");
+	const sourceEntry = {
+		url: "https://user:password@example.com/mcp?token=secret#fragment",
+		headers: { Authorization: "Bearer secret", "X-Name": "also-secret" },
+		env: { API_KEY: "secret" },
+		args: ["--token", "secret"],
+	};
 	const { store, options } = setup({
-		[piConfig]: JSON.stringify({
-			mcpServers: {
-				secure: {
-					url: "https://user:password@example.com/mcp?token=secret#fragment",
-					headers: { Authorization: "Bearer secret", "X-Name": "also-secret" },
-					env: { API_KEY: "secret" },
-					args: ["--token", "secret"],
-				},
-			},
-		}),
+		[piConfig]: JSON.stringify({ mcpServers: { secure: sourceEntry } }),
 	});
 	const control = new McpControl({ ...options, fileStore: store });
 	const entry = control.snapshot().entries.find((candidate) => candidate.serverName === "secure");
 	assert.ok(entry);
-	const serialized = JSON.stringify(entry);
-	assert.doesNotMatch(serialized, /password|Bearer secret|also-secret|API_KEY":"secret|--token|fragment/);
-	assert.match(serialized, /<redacted>/);
+	assert.deepEqual(entry.config, sourceEntry);
+	assert.equal(entry.sourceText, JSON.stringify(sourceEntry));
 	assert.equal(entry.normalized.url, "https://example.com/mcp");
+	assert.deepEqual(entry.normalized.environmentNames, ["API_KEY"]);
 	assert.deepEqual(entry.normalized.headerNames, ["Authorization", "X-Name"]);
 });
 
@@ -154,6 +152,51 @@ test("JSONC upsert preserves surrounding comments and unrelated fields", () => {
 	assert.match(after, /"other": \{ "unknown": true \}/);
 	assert.match(after, /"command": "bun"/);
 	assert.match(after, /"custom": 42/);
+});
+
+test("codecs retain JSONC and TOML server entries in their original source syntax", () => {
+	const jsoncText = `{
+  "mcpServers": {
+    "exact": {
+      // keep this comment and spacing
+      "command" : "node",
+      "args": [ "--flag", "value" ],
+    }
+  }
+}
+`;
+	assert.equal(
+		jsoncCodec.parseDocument(jsoncText, ["mcpServers"]).sourceTextByServer.exact,
+		`{
+      // keep this comment and spacing
+      "command" : "node",
+      "args": [ "--flag", "value" ],
+    }`,
+	);
+
+	const tomlText = `# global comment
+
+[mcp_servers.exact]
+command  = "node"
+args = [ "--flag", "value" ]
+
+[mcp_servers.exact.env]
+TOKEN = "secret"
+
+# belongs to the next server
+[mcp_servers.other]
+command = "other"
+`;
+	assert.equal(
+		tomlCodec.parseDocument(tomlText, ["mcp_servers"]).sourceTextByServer.exact,
+		`[mcp_servers.exact]
+command  = "node"
+args = [ "--flag", "value" ]
+
+[mcp_servers.exact.env]
+TOKEN = "secret"
+`,
+	);
 });
 
 test("Codex TOML replacement targets quoted server tables and preserves unrelated text", () => {
@@ -500,6 +543,39 @@ const plainTheme = {
 	bold: (text) => text,
 };
 
+test("panel shows the selected entry in its original TOML syntax with complete values", () => {
+	const codexConfig = join(home, ".codex", "config.toml");
+	const { store, options } = setup({
+		[codexConfig]: `[mcp_servers.secure]
+command = "node"
+args = [ "--token", "argument-secret" ]
+
+[mcp_servers.secure.env]
+TOKEN = "env-secret"
+`,
+	});
+	const control = new McpControl({ ...options, fileStore: store });
+	const panel = new McpControlPanel({
+		tui: { terminal: { rows: 80 }, requestRender() {} },
+		theme: plainTheme,
+		keybindings: { matches: () => false },
+		snapshot: control.snapshot(),
+		onDone() {},
+	});
+
+	const outputLines = panel.render(160);
+	const output = outputLines.join("\n");
+	const sourceLineIndex = outputLines.findIndex((line) => line.includes("[mcp_servers.secure]"));
+	assert.ok(sourceLineIndex > 0);
+	assert.match(outputLines[sourceLineIndex - 1], /─{20,}/);
+	assert.doesNotMatch(output, /Source entry/);
+	assert.match(output, /\[mcp_servers\.secure\]/);
+	assert.match(output, /args = \[ "--token", "argument-secret" \]/);
+	assert.match(output, /\[mcp_servers\.secure\.env\]/);
+	assert.match(output, /TOKEN = "env-secret"/);
+	assert.doesNotMatch(output, /"command":|<redacted>|values masked/);
+});
+
 test("panel shows zero-count Agent tabs but source cycling skips them", () => {
 	const piConfig = join(home, ".pi", "agent", "mcp.json");
 	const cursorConfig = join(home, ".cursor", "mcp.json");
@@ -738,6 +814,51 @@ test("j/k wrap between the first and last MCP entries without stopping on Agent 
 	assert.match(panel.render(120).join("\n"), /Cursor \/ last/);
 	panel.handleInput("j");
 	assert.match(panel.render(120).join("\n"), /Pi \/ first/);
+});
+
+test("source preview syntax-highlights JSON, JSONC, and TOML with Pi's active theme", () => {
+	initTheme(undefined, false);
+	const piConfig = join(home, ".pi", "agent", "mcp.json");
+	const codexConfig = join(home, ".codex", "config.toml");
+	const openCodeConfig = join(home, ".config", "opencode", "opencode.jsonc");
+	const { store, options } = setup({
+		[piConfig]: `{"mcpServers":{"json-server":{"command":"node"}}}\n`,
+		[codexConfig]: `[mcp_servers.toml-server]\ncommand = "node"\n`,
+		[openCodeConfig]: `{
+  "mcp": {
+    "jsonc-server": {
+      // retain JSONC comments
+      "type": "local",
+      "command": ["node"]
+    }
+  }
+}
+`,
+	});
+	const control = new McpControl({ ...options, fileStore: store });
+	const snapshot = control.snapshot();
+
+	for (const { agentId, serverName, visibleSource } of [
+		{ agentId: "pi", serverName: "json-server", visibleSource: '"command":"node"' },
+		{ agentId: "codex", serverName: "toml-server", visibleSource: "[mcp_servers.toml-server]" },
+		{ agentId: "opencode", serverName: "jsonc-server", visibleSource: "// retain JSONC comments" },
+	]) {
+		const entry = snapshot.entries.find(
+			(candidate) => candidate.agentId === agentId && candidate.serverName === serverName,
+		);
+		assert.ok(entry);
+		const panel = new McpControlPanel({
+			tui: { terminal: { rows: 80 }, requestRender() {} },
+			theme: plainTheme,
+			keybindings: { matches: () => false },
+			snapshot,
+			cursor: { tabId: agentId, entryId: entry.id },
+			onDone() {},
+		});
+		const output = panel.render(160).join("\n");
+		assert.match(output, /\x1b\[[0-9;]*m/);
+		assert.ok(output.replace(/\x1b\[[0-9;]*m/g, "").includes(visibleSource));
+	}
 });
 
 test("default export registers /mcp without connecting any server", async () => {

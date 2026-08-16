@@ -524,6 +524,7 @@ export function discoverCatalog(
 					serverName,
 					source,
 					rawConfig: structuredClone(value),
+					sourceText: document.sourceTextByServer[serverName] ?? "",
 					normalized: normalizeServerConfig(value, source.flavor),
 					resolution: "unknown-precedence",
 					originChain: [],

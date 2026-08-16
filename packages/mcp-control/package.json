@@ -1,6 +1,6 @@
 {
   "name": "@async23/pi-mcp-control",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Discover, edit, connect, and inspect Agent-scoped MCP servers in Pi",
   "type": "module",
   "license": "MIT",

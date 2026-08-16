@@ -33,8 +33,8 @@ The panel shows:
 - `ALL`, `.agents`, Pi, Claude, Codex, OpenCode, Gemini, Antigravity, Cursor, Trae, Grok, Kimi Code, and Zed tabs in the same baseline order as `pi-skill-control`;
 - Global / Project / Temporary groups inside one Agent tab;
 - exact source file and JSON Pointer or TOML table identity;
-- transport, masked environment/header names, effective-source state, connection state, and primitive counts;
-- redacted source configuration in the preview;
+- transport, environment/header names, effective-source state, connection state, and primitive counts;
+- the selected source entry syntax-highlighted in its original JSON/JSONC or TOML syntax, preserving its formatting, comments, and unmasked values;
 - separate connection runtimes for every effective Agent/server instance.
 
 Keyboard controls:
@@ -83,9 +83,9 @@ Every mutation is planned against one exact source identity and shows a redacted
 3. writes a same-directory temporary file with restricted permissions;
 4. flushes and atomically renames it into place.
 
-JSON/JSONC uses structural edits so comments and unrelated fields survive. Codex TOML replaces only the selected `mcp_servers.<name>` table and its child tables, preserving unrelated sections and comments. Field edits start from the original unredacted entry internally, so masked secrets and unknown fields are not replaced by placeholder text. Symlink targets and non-regular files are rejected for writes.
+JSON/JSONC uses structural edits so comments and unrelated fields survive. Codex TOML replaces only the selected `mcp_servers.<name>` table and its child tables, preserving unrelated sections and comments. Field edits start from the original entry, so existing secrets and unknown fields survive targeted changes. Symlink targets and non-regular files are rejected for writes.
 
-Environment values, HTTP header values, credential-like fields, CLI arguments, URL credentials, query strings, and fragments are masked before reaching the panel, change preview, or diagnostics. The extension never copies OAuth sessions from another Agent.
+The `/mcp` Details pane intentionally displays the selected source entry in full, including environment values, HTTP header values, credential-like fields, CLI arguments, URL credentials, query strings, and fragments. Treat the panel as sensitive. Change previews remain redacted, runtime errors are sanitized, and the extension never copies OAuth sessions from another Agent.
 
 ## MCP runtime
 

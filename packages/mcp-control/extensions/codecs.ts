@@ -25,6 +25,7 @@ export class ConfigParseError extends Error {
 export interface ParsedConfigDocument {
 	root: Record<string, unknown>;
 	serverMap: Record<string, unknown>;
+	sourceTextByServer: Record<string, string>;
 }
 
 export interface ConfigCodec {
@@ -74,15 +75,44 @@ function ensureTrailingNewline(content: string, eol: string): string {
 	return content.endsWith("\n") ? content : `${content}${eol}`;
 }
 
+function jsoncNodeAtPath(root: JsonNode, path: readonly string[]): JsonNode | undefined {
+	let node: JsonNode | undefined = root;
+	for (const segment of path) {
+		if (node.type !== "object") return undefined;
+		const property = node.children?.find((child) => child.children?.[0]?.value === segment);
+		node = property?.children?.[1];
+		if (!node) return undefined;
+	}
+	return node;
+}
+
+function jsoncSourceTextByServer(content: string, rootPath: readonly string[]): Record<string, string> {
+	const errors: ParseError[] = [];
+	const tree = parseTree(content, errors, { allowTrailingComma: true, disallowComments: false });
+	if (errors.length > 0 || !tree) return {};
+	const container = jsoncNodeAtPath(tree, rootPath);
+	if (container?.type !== "object") return {};
+
+	const result: Record<string, string> = {};
+	for (const property of container.children ?? []) {
+		const key = property.children?.[0]?.value;
+		const value = property.children?.[1];
+		if (typeof key !== "string" || !value) continue;
+		result[key] = content.slice(value.offset, value.offset + value.length);
+	}
+	return result;
+}
+
 export const jsoncCodec: ConfigCodec = {
 	parseDocument(content, rootPath) {
 		const root = parseJsoncRoot(content);
 		const value = getPath(root, rootPath);
-		if (value === undefined) return { root, serverMap: {} };
+		const sourceTextByServer = jsoncSourceTextByServer(content, rootPath);
+		if (value === undefined) return { root, serverMap: {}, sourceTextByServer };
 		if (!isRecord(value)) {
 			throw new ConfigParseError("jsonc", `MCP server container /${rootPath.join("/")} must be an object`);
 		}
-		return { root, serverMap: value };
+		return { root, serverMap: value, sourceTextByServer };
 	},
 
 	upsertServer(content, rootPath, serverName, config) {
@@ -179,7 +209,7 @@ interface TomlSection {
 
 function tomlSections(content: string): TomlSection[] {
 	const headers: Array<{ start: number; path: string[] }> = [];
-	const pattern = /^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/gm;
+	const pattern = /^[ \t]*\[([^\[\]]+)\][ \t]*(?:#.*)?$/gm;
 	for (let match = pattern.exec(content); match; match = pattern.exec(content)) {
 		const path = parseTomlDottedKey(match[1] ?? "");
 		if (path) headers.push({ start: match.index, path });
@@ -209,6 +239,33 @@ function leadingHeaderTriviaStart(content: string, headerStart: number, lowerBou
 	return start;
 }
 
+function matchingTomlSections(content: string, target: readonly string[]): TomlSection[] {
+	const sections = tomlSections(content);
+	return sections
+		.map((section, index) => {
+			if (!pathStartsWith(section.path, target)) return undefined;
+			const next = sections[index + 1];
+			return next && !pathStartsWith(next.path, target)
+				? { ...section, end: leadingHeaderTriviaStart(content, next.start, section.start) }
+				: section;
+		})
+		.filter((section): section is TomlSection => Boolean(section));
+}
+
+function tomlSourceTextByServer(
+	content: string,
+	rootPath: readonly string[],
+	serverMap: Record<string, unknown>,
+): Record<string, string> {
+	const result: Record<string, string> = {};
+	for (const serverName of Object.keys(serverMap)) {
+		const sections = matchingTomlSections(content, [...rootPath, serverName]);
+		if (sections.length === 0) continue;
+		result[serverName] = sections.map((section) => content.slice(section.start, section.end)).join("");
+	}
+	return result;
+}
+
 function renderTomlServer(serverName: string, config: Record<string, unknown>, eol: string): string {
 	const rendered = stringifyToml({ mcp_servers: { [serverName]: config } }).trimEnd();
 	return rendered.replace(/\n/g, eol);
@@ -218,16 +275,7 @@ function replaceTomlServer(content: string, serverName: string, config?: Record<
 	parseTomlRoot(content);
 	const eol = content.includes("\r\n") ? "\r\n" : "\n";
 	const target = ["mcp_servers", serverName];
-	const sections = tomlSections(content);
-	const matching = sections
-		.map((section, index) => {
-			if (!pathStartsWith(section.path, target)) return undefined;
-			const next = sections[index + 1];
-			return next && !pathStartsWith(next.path, target)
-				? { ...section, end: leadingHeaderTriviaStart(content, next.start, section.start) }
-				: section;
-		})
-		.filter((section): section is TomlSection => Boolean(section));
+	const matching = matchingTomlSections(content, target);
 	const insertionOffset = matching[0]?.start ?? content.length;
 	let next = content;
 	for (const section of [...matching].sort((left, right) => right.start - left.start)) {
@@ -253,11 +301,15 @@ export const tomlCodec: ConfigCodec = {
 	parseDocument(content, rootPath) {
 		const root = parseTomlRoot(content);
 		const value = getPath(root, rootPath);
-		if (value === undefined) return { root, serverMap: {} };
+		if (value === undefined) return { root, serverMap: {}, sourceTextByServer: {} };
 		if (!isRecord(value)) {
 			throw new ConfigParseError("toml", `MCP server table ${rootPath.join(".")} must be a table`);
 		}
-		return { root, serverMap: value };
+		return {
+			root,
+			serverMap: value,
+			sourceTextByServer: tomlSourceTextByServer(content, rootPath, value),
+		};
 	},
 
 	upsertServer(content, rootPath, serverName, config) {
@@ -296,12 +348,6 @@ export function readJsoncNode(content: string, path: readonly string[]): unknown
 	const errors: ParseError[] = [];
 	const tree = parseTree(content, errors, { allowTrailingComma: true, disallowComments: false });
 	if (errors.length > 0 || !tree) return undefined;
-	let node: JsonNode | undefined = tree;
-	for (const segment of path) {
-		if (node.type !== "object") return undefined;
-		const property = node.children?.find((child) => child.children?.[0]?.value === segment);
-		node = property?.children?.[1];
-		if (!node) return undefined;
-	}
-	return getNodeValue(node);
+	const node = jsoncNodeAtPath(tree, path);
+	return node ? getNodeValue(node) : undefined;
 }

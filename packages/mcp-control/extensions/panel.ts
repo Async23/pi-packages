@@ -1,4 +1,9 @@
-import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import {
+	getLanguageFromPath,
+	highlightCode,
+	type KeybindingsManager,
+	type Theme,
+} from "@earendil-works/pi-coding-agent";
 import {
 	type Component,
 	type Focusable,
@@ -511,12 +516,28 @@ export class McpControlPanel implements Component, Focusable {
 		];
 		if (entry.normalized.command) lines.push(`${this.#theme.fg("muted", "Command")} ${entry.normalized.command} (+${entry.normalized.argumentCount} args)`);
 		if (entry.normalized.url) lines.push(...wrapTextWithAnsi(`${this.#theme.fg("muted", "URL")}     ${entry.normalized.url}`, width));
-		if (entry.normalized.environmentNames.length > 0) lines.push(`${this.#theme.fg("muted", "Env")}     ${entry.normalized.environmentNames.join(", ")} (values masked)`);
-		if (entry.normalized.headerNames.length > 0) lines.push(`${this.#theme.fg("muted", "Headers")} ${entry.normalized.headerNames.join(", ")} (values masked)`);
+		if (entry.normalized.environmentNames.length > 0) lines.push(`${this.#theme.fg("muted", "Env")}     ${entry.normalized.environmentNames.join(", ")}`);
+		if (entry.normalized.headerNames.length > 0) lines.push(`${this.#theme.fg("muted", "Headers")} ${entry.normalized.headerNames.join(", ")}`);
 		if (count) lines.push(`${this.#theme.fg("muted", "Primitives")} ${count.tools} tools · ${count.resources} resources · ${count.resourceTemplates} templates · ${count.prompts} prompts`);
 		if (entry.runtimeError) lines.push(...wrapTextWithAnsi(this.#theme.fg("error", entry.runtimeError), width));
-		lines.push("", this.#theme.fg("muted", "Redacted source entry"));
-		for (const line of JSON.stringify(entry.config, null, 2).split("\n")) lines.push(this.#theme.fg("dim", line));
+		lines.push("", this.#theme.fg("borderMuted", "─".repeat(Math.max(1, width))));
+		const sourceText = entry.sourceText || "<source text unavailable>";
+		const language = entry.path.toLowerCase().endsWith(".jsonc") ? "jsonc" : getLanguageFromPath(entry.path);
+		let sourceLines = sourceText.split(/\r?\n/);
+		let highlighted = false;
+		if (language) {
+			try {
+				sourceLines = highlightCode(sourceText, language);
+				highlighted = sourceLines.some((line) => line.includes("\x1b["));
+			} catch {
+				// Pi may render this component before its global syntax theme is initialized.
+			}
+		}
+		for (const line of sourceLines) {
+			const styled = highlighted ? line : this.#theme.fg("dim", line);
+			const wrapped = wrapTextWithAnsi(styled, width);
+			lines.push(...(wrapped.length > 0 ? wrapped : [""]));
+		}
 		return lines;
 	}
 

@@ -80,6 +80,7 @@ export interface InternalServerEntry {
 	serverName: string;
 	source: ConfigSourceDescriptor;
 	rawConfig: Record<string, unknown>;
+	sourceText: string;
 	normalized: NormalizedServerConfig;
 	resolution: EntryResolution;
 	originChain: string[];
@@ -101,6 +102,7 @@ export interface McpServerEntry {
 	readOnlyReason?: string;
 	normalized: NormalizedServerConfig;
 	config: Record<string, unknown>;
+	sourceText: string;
 	resolution: EntryResolution;
 	originChain: string[];
 	runtimeInstanceId?: string;
