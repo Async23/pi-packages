@@ -19,7 +19,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, normalize, resolve, sep } from "node:path";
+import { basename, join, normalize, relative, resolve, sep } from "node:path";
 import { BLOCKED_ICON, detectedUserOnlyIcon, FALLBACK_USER_ICON } from "./icons.ts";
 import {
 	CONFIG_FILE_NAME,
@@ -83,9 +83,16 @@ interface SkillListItem {
 	description: string;
 	sourceKind: SkillSourceKind;
 	sourceLabel: string;
+	sourceAliases: readonly SkillSourceAlias[];
 	configurationLevel: SkillConfigurationLevel;
 	content: string;
 	nativeAvailability: SkillAvailability;
+}
+
+interface SkillSourceAlias {
+	kind: SkillSourceKind;
+	scannedPath: string;
+	scannedLabel: string;
 }
 
 interface ListGroupRow {
@@ -160,6 +167,10 @@ interface ProviderTab {
 	match: (item: SkillListItem) => boolean;
 }
 
+function matchesSourceKind(item: SkillListItem, kind: SkillSourceKind): boolean {
+	return item.sourceKind === kind || item.sourceAliases.some((alias) => alias.kind === kind);
+}
+
 const PROVIDER_TABS: ProviderTab[] = [
 	{ id: "all", label: ALL_PROVIDERS_TAB, shortLabel: "ALL", match: () => true },
 	{
@@ -178,10 +189,10 @@ const PROVIDER_TABS: ProviderTab[] = [
 	},
 	{
 		id: "claude",
-		label: "Claude",
-		shortLabel: "Claude",
+		label: "Claude Code",
+		shortLabel: "Claude Code",
 		showWhenEmpty: true,
-		match: (item) => item.sourceKind === "claude",
+		match: (item) => matchesSourceKind(item, "claude"),
 	},
 	{
 		id: "codex",
@@ -352,7 +363,9 @@ export function classifySkillSource(
 	if (underPath(path, piUser)) {
 		return { kind: "pi", label: `Pi (${displayPath(piUser, home)})` };
 	}
-	if (underPath(path, claudeUser)) return userLabel("Claude", claudeUser);
+	if (underPath(path, claudeUser)) {
+		return { kind: "claude", label: `Claude Code (${displayPath(claudeUser, home)})` };
+	}
 	if (underPath(path, codexUser)) return userLabel("Codex", codexUser);
 	if (underPath(path, opencodeUser)) return userLabel("OpenCode", opencodeUser);
 	if (underPath(path, geminiUser)) return userLabel("Gemini", geminiUser);
@@ -365,7 +378,9 @@ export function classifySkillSource(
 		return { kind: "kimi", label: `Kimi Code (${displayPath(kimiUser, home)})` };
 	}
 
-	if (containsSegment(path, [".claude", "skills"])) return { kind: "claude", label: "Claude (project)" };
+	if (containsSegment(path, [".claude", "skills"])) {
+		return { kind: "claude", label: "Claude Code (project)" };
+	}
 	if (containsSegment(path, [".codex", "skills"])) return { kind: "codex", label: "Codex (project)" };
 	if (containsSegment(path, [".config", "opencode", "skills"]) || containsSegment(path, [".opencode", "skills"])) {
 		return { kind: "opencode", label: "OpenCode (project)" };
@@ -395,6 +410,31 @@ export function classifySkillSource(
 	}
 	if (skill.sourceInfo.scope === "project") return { kind: "other", label: "Other (project)" };
 	return { kind: "other", label: "Other" };
+}
+
+function claudeCodeSourceAlias(
+	path: string,
+	primaryKind: SkillSourceKind,
+	cwd: string,
+	home: string,
+): SkillSourceAlias | undefined {
+	if (primaryKind === "claude") return undefined;
+
+	// Pi silently keeps only the first lexical path when two Skill roots resolve
+	// to the same real file. Preserve Claude Code as a view of that shared root.
+	const scannedRoot = resolvedPath(join(home, ".claude", "skills"), cwd);
+	const targetRoot = canonicalPath(scannedRoot, cwd);
+	if (scannedRoot === targetRoot || !underPath(path, targetRoot)) return undefined;
+
+	const relativeSkillPath = relative(targetRoot, path);
+	const scannedPath = normalize(join(scannedRoot, relativeSkillPath));
+	if (canonicalPath(scannedPath, cwd) !== path) return undefined;
+
+	return {
+		kind: "claude",
+		scannedPath,
+		scannedLabel: displayPath(scannedPath, home),
+	};
 }
 
 export function availabilityStateLabel(state: SkillAvailabilityState): string {
@@ -734,6 +774,8 @@ export class SkillControlPanel implements Component, Focusable {
 			return;
 		}
 
+		const selectedRow = this.#selectedRow();
+		const selectedRowKey = selectedRow ? this.#rowKey(selectedRow) : undefined;
 		const changeCount = this.#pendingCount();
 		try {
 			this.#onApply(cloneBlockedPaths(this.#blockedPaths));
@@ -748,6 +790,11 @@ export class SkillControlPanel implements Component, Focusable {
 
 		replaceBlockedPaths(this.#initialBlockedPaths, this.#blockedPaths);
 		this.#policyUndoStack.length = 0;
+		if (selectedRowKey) {
+			const rows = this.#listRows();
+			const selectedIndex = rows.findIndex((row) => this.#rowKey(row) === selectedRowKey);
+			if (selectedIndex >= 0) this.#selectedIndex = selectedIndex;
+		}
 		this.#flash = {
 			kind: "success",
 			text: `Applied ${changeCount} Skill ${changeCount === 1 ? "change" : "changes"} · No pending changes`,
@@ -989,10 +1036,46 @@ export class SkillControlPanel implements Component, Focusable {
 		this.#flash = undefined;
 	}
 
+	#nativeMarkerRank(item: SkillListItem): number {
+		return this.#nativeStateFor(item) === "command-only" ? 0 : 1;
+	}
+
+	#compareBySavedSymbolsThenName(left: SkillListItem, right: SkillListItem): number {
+		const blockedDelta =
+			Number(this.#initialBlockedPaths.has(left.path)) - Number(this.#initialBlockedPaths.has(right.path));
+		if (blockedDelta !== 0) return blockedDelta;
+
+		const markerDelta = this.#nativeMarkerRank(left) - this.#nativeMarkerRank(right);
+		if (markerDelta !== 0) return markerDelta;
+		return left.name.localeCompare(right.name);
+	}
+
+	#orderWithinSourceGroups(items: readonly SkillListItem[]): SkillListItem[] {
+		const groups = new Map<string, SkillListItem[]>();
+		for (const item of items) {
+			const key = `${item.sourceKind}\0${item.sourceLabel}`;
+			const group = groups.get(key);
+			if (group) group.push(item);
+			else groups.set(key, [item]);
+		}
+		return [...groups.values()].flatMap((group) =>
+			[...group].sort((left, right) => this.#compareBySavedSymbolsThenName(left, right)),
+		);
+	}
+
+	#orderByConfigurationLevelAndSymbols(items: readonly SkillListItem[]): SkillListItem[] {
+		return [...items].sort((left, right) => {
+			const levelDelta =
+				CONFIGURATION_LEVEL_ORDER.indexOf(left.configurationLevel) -
+				CONFIGURATION_LEVEL_ORDER.indexOf(right.configurationLevel);
+			return levelDelta || this.#compareBySavedSymbolsThenName(left, right);
+		});
+	}
+
 	#providerItems(): SkillListItem[] {
 		const provider = this.#activeProvider();
-		if (provider.id === "all") return this.#items;
-		return this.#orderByConfigurationLevel(this.#items.filter((item) => provider.match(item)));
+		if (provider.id === "all") return this.#orderWithinSourceGroups(this.#items);
+		return this.#orderByConfigurationLevelAndSymbols(this.#items.filter((item) => provider.match(item)));
 	}
 
 	#orderByConfigurationLevel(items: readonly SkillListItem[]): SkillListItem[] {
@@ -1499,17 +1582,18 @@ export class SkillControlPanel implements Component, Focusable {
 			const nativeState = this.#nativeStateFor(row.item);
 			const blocked = this.#isBlocked(row.item);
 			const status = this.#rowPolicyStatus(row.item);
-			const markers = [
-				this.#nativeMarker(nativeState),
-				status === "Blocked" ? this.#theme.fg("warning", BLOCKED_ICON) : "",
-			].filter((marker) => marker.length > 0);
+			// These are fixed one-cell columns: policy, native route, then name.
+			// Keep the blank slots so rows without markers never collapse left.
+			const blockedMarker =
+				status === "Blocked" ? this.#theme.fg("warning", BLOCKED_ICON) : " ";
+			const userOnlyMarker = this.#nativeMarker(nativeState) || " ";
 			const label = selected
 				? this.#theme.fg("accent", this.#theme.bold(row.item.name))
 				: blocked
 					? this.#theme.fg("dim", row.item.name)
 					: this.#theme.fg("text", row.item.name);
 			const badge = status === "Unsaved" ? this.#theme.fg("warning", status) : "";
-			const left = markers.length > 0 ? `    ${markers.join(" ")} ${label}` : `    ${label}`;
+			const left = `  ${blockedMarker} ${userOnlyMarker} ${label}`;
 			const contentWidth = Math.max(0, width - 2);
 			const content = badge ? this.#joined(left, badge, contentWidth) : left;
 			return this.#paneContent(content, width, selected && focused);
@@ -1591,13 +1675,22 @@ export class SkillControlPanel implements Component, Focusable {
 		return this.#theme.fg("syntaxString", value);
 	}
 
+	#activeSourceAlias(item: SkillListItem): SkillSourceAlias | undefined {
+		const provider = this.#activeProvider();
+		if (provider.id === "all" || provider.id === item.sourceKind) return undefined;
+		return item.sourceAliases.find((alias) => alias.kind === provider.id);
+	}
+
 	#pathDetailLines(item: SkillListItem, width: number): string[] {
-		if (item.scannedPath === item.path) {
+		const alias = this.#activeSourceAlias(item);
+		const scannedPath = alias?.scannedPath ?? item.scannedPath;
+		const scannedLabel = alias?.scannedLabel ?? item.scannedLabel;
+		if (scannedPath === item.path) {
 			return this.#labeledTextLines("Path", this.#theme.fg("muted", item.label), width);
 		}
 
 		return [
-			...this.#labeledTextLines("Scanned", this.#theme.fg("muted", item.scannedLabel), width),
+			...this.#labeledTextLines("Scanned", this.#theme.fg("muted", scannedLabel), width),
 			...this.#labeledTextLines(
 				"Target",
 				`${this.#theme.fg("muted", item.label)} ${this.#theme.fg("accent", "(symlink)")}`,
@@ -1856,23 +1949,33 @@ export class SkillControlPanel implements Component, Focusable {
 	}
 }
 
-function toListItems(skills: readonly Skill[], cwd: string, agentDir: string): SkillListItem[] {
+export function toListItems(
+	skills: readonly Skill[],
+	cwd: string,
+	agentDir: string,
+	home = homedir(),
+	kimiCodeHome = process.env.KIMI_CODE_HOME || join(home, ".kimi-code"),
+): SkillListItem[] {
 	const kindOrder = new Map(SOURCE_ORDER.map((kind, index) => [kind, index]));
 
 	return [...skills]
 		.map((skill) => {
 			const scannedPath = resolvedPath(skill.filePath, cwd);
 			const path = canonicalPath(skill.filePath, cwd);
-			const source = classifySkillSource(skill, cwd, agentDir);
+			const source = classifySkillSource(skill, cwd, agentDir, home, kimiCodeHome);
+			const sourceAliases = [claudeCodeSourceAlias(path, source.kind, cwd, home)].filter(
+				(alias): alias is SkillSourceAlias => alias !== undefined,
+			);
 			return {
 				path,
 				scannedPath,
 				name: skill.name,
-				label: displayPath(path),
-				scannedLabel: displayPath(scannedPath),
+				label: displayPath(path, home),
+				scannedLabel: displayPath(scannedPath, home),
 				description: skill.description,
 				sourceKind: source.kind,
 				sourceLabel: source.label,
+				sourceAliases,
 				configurationLevel: configurationLevelForScope(skill.sourceInfo.scope),
 				content: readSkillContent(skill.filePath),
 				nativeAvailability: nativeSkillAvailability(skill),

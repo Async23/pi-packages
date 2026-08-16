@@ -1,6 +1,6 @@
 {
   "name": "@async23/pi-skill-control",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Control Skill availability in Pi while showing native invocation routes",
   "type": "module",
   "license": "MIT",

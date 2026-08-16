@@ -29,6 +29,7 @@ const {
 	readPolicyConfig,
 	replaceSkillsSection,
 	skillAvailabilityState,
+	toListItems,
 } = extension;
 const { writePolicyConfig } = await import("../extensions/policy.ts");
 const {
@@ -226,7 +227,7 @@ test("classifySkillSource recognizes every supported tool root", () => {
 	const agentDir = join(home, ".pi", "agent");
 	const cases = [
 		["pi", join(agentDir, "skills"), "Pi (~/.pi/agent/skills)"],
-		["claude", join(home, ".claude", "skills"), "Claude (~/.claude/skills)"],
+		["claude", join(home, ".claude", "skills"), "Claude Code (~/.claude/skills)"],
 		["codex", join(home, ".codex", "skills"), "Codex (~/.codex/skills)"],
 		["opencode", join(home, ".config", "opencode", "skills"), "OpenCode (~/.config/opencode/skills)"],
 		["gemini", join(home, ".gemini", "skills"), "Gemini (~/.gemini/skills)"],
@@ -287,6 +288,41 @@ test("source classification preserves a tool symlink entry instead of its shared
 	});
 });
 
+test("a symlinked Claude Code root remains visible as a selectable source alias", () => {
+	const homeEntry = join(skillRoot, "claude-code-alias-home");
+	mkdirSync(homeEntry, { recursive: true });
+	const home = realpathSync.native(homeEntry);
+	const agentDir = join(home, ".pi", "agent");
+	const shared = makeSkill("shared-with-claude-code", {
+		dir: join(home, ".agents", "skills", "shared-with-claude-code"),
+	});
+	mkdirSync(join(home, ".claude"), { recursive: true });
+	symlinkSync(join(home, ".agents", "skills"), join(home, ".claude", "skills"), "dir");
+
+	const items = toListItems([shared], home, agentDir, home);
+	const panel = makePanel(() => undefined, { items });
+	let output = terminalText(panel.render(120).join("\n"));
+
+	assert.match(output, /\[ALL 1\]\s+\.agents 1\s+Claude Code 1/);
+	assert.equal(wideList(panel).match(/shared-with-claude-code/g)?.length, 1);
+
+	panel.handleInput("]");
+	panel.handleInput("]");
+	output = terminalText(panel.render(120).join("\n"));
+	assert.match(output, /\[Claude Code 1\]/);
+	assert.match(filterHeaderLine(panel), /\/ filter within Claude Code/);
+	assert.match(wideList(panel), /Global \(1\).*shared-with-claude-code/s);
+	assert.match(widePreview(panel), /Scanned\s+~\/\.claude\/skills\/shared-with-claude-code\/SKILL\.md/);
+	assert.match(widePreview(panel), /Target\s+~\/\.agents\/skills\/shared-with-claude-code\/SKILL\.md\s+\(symlink\)/);
+
+	panel.handleInput(" ");
+	assert.match(listLine(panel, "shared-with-claude-code"), /Unsaved/);
+	panel.handleInput("[");
+	panel.handleInput("[");
+	assert.match(listLine(panel, "shared-with-claude-code"), /Unsaved/);
+	assert.match(terminalText(panel.render(120).join("\n")), /\[ALL 1\]/);
+});
+
 test("parseSkillCommand only recognizes direct /skill invocations", () => {
 	assert.equal(parseSkillCommand("/skill:review"), "review");
 	assert.equal(parseSkillCommand("/skill:review focus tests"), "review");
@@ -316,6 +352,7 @@ function makePanelItem(name, sourceKind, sourceLabel, options = {}) {
 		description: options.description ?? `${name} description`,
 		sourceKind,
 		sourceLabel,
+		sourceAliases: options.sourceAliases ?? [],
 		configurationLevel: options.configurationLevel ?? "global",
 		content: options.content ?? `# ${name}\n`,
 		nativeAvailability: options.nativeAvailability ?? { modelVisible: true, commandAvailable: true },
@@ -348,10 +385,12 @@ function makePanel(onDone = () => undefined, options = {}) {
 				(action === "tui.select.cancel" && data === "ESC"),
 		},
 		items,
-		blockedPaths: new Set([
-			"/skills/settings-model/SKILL.md",
-			"/skills/agents-project/SKILL.md",
-		]),
+		blockedPaths:
+			options.blockedPaths ??
+			new Set([
+				"/skills/settings-model/SKILL.md",
+				"/skills/agents-project/SKILL.md",
+			]),
 		userOnlyIcon: options.userOnlyIcon ?? FALLBACK_USER_ICON,
 		onApply: options.onApply ?? (() => undefined),
 		onDone,
@@ -382,6 +421,14 @@ function listLine(panel, skillName) {
 		.find((line) => line.includes(skillName));
 }
 
+function selectSkill(panel, skillName) {
+	for (let index = 0; index < 100; index++) {
+		if (widePreview(panel).includes(`/skills/${skillName}/SKILL.md`)) return;
+		panel.handleInput("j");
+	}
+	assert.fail(`could not select ${skillName}`);
+}
+
 function filterHeaderLine(panel, width = 120) {
 	const lines = panel.render(width);
 	const sectionIndex = lines.findIndex((line) => /^├─ Skills \d/.test(terminalText(line)));
@@ -403,7 +450,7 @@ test("panel uses a source-first compact header without Extra scan", () => {
 	assert.doesNotMatch(output, /Native\s+5 Model \+ \/skill|Policy\s+⊘ 2|Sources\s+\[ALL 6\]|Filter\s+\//);
 	assert.doesNotMatch(output, /\bAvailability\b/);
 	assert.doesNotMatch(output, /[●◑○◆]|Model only|User only|Manual only|Disabled/);
-	assert.doesNotMatch(output, /\bPi 0\b|\bClaude 0\b|\bKimi Code 0\b|\bZed 0\b/);
+	assert.doesNotMatch(output, /\bPi 0\b|\bClaude Code 0\b|\bKimi Code 0\b|\bZed 0\b/);
 	assert.doesNotMatch(output, /Extra scan|Claude off|Codex off/);
 });
 
@@ -425,15 +472,17 @@ test("source strip keeps non-empty tools and collapses zero-count tools", () => 
 test("a specific source groups Skills by configuration level", () => {
 	const panel = makePanel(() => undefined, {
 		items: [
-			makePanelItem("project-skill", "claude", "Claude (project)", {
+			makePanelItem("project-skill", "claude", "Claude Code (project)", {
 				configurationLevel: "project",
+				nativeAvailability: { modelVisible: false, commandAvailable: true },
 			}),
-			makePanelItem("global-one", "claude", "Claude (~/.claude/skills)"),
-			makePanelItem("temporary-skill", "claude", "Claude (temporary)", {
+			makePanelItem("global-one", "claude", "Claude Code (~/.claude/skills)"),
+			makePanelItem("temporary-skill", "claude", "Claude Code (temporary)", {
 				configurationLevel: "temporary",
 			}),
-			makePanelItem("global-two", "claude", "Claude (~/.claude/skills)"),
+			makePanelItem("global-two", "claude", "Claude Code (~/.claude/skills)"),
 		],
+		blockedPaths: new Set(["/skills/global-two/SKILL.md"]),
 	});
 	panel.render(120);
 	panel.handleInput("]");
@@ -449,11 +498,109 @@ test("a specific source groups Skills by configuration level", () => {
 	assert.ok(list.indexOf("Temporary (1)") < list.indexOf("temporary-skill"));
 });
 
+test("normal lists order saved symbol groups before Skill names", () => {
+	const sourceLabel = ".agents (~/.agents/skills)";
+	const commandOnly = { modelVisible: false, commandAvailable: true };
+	const items = [
+		makePanelItem("zeta-blocked-model", "agents", sourceLabel),
+		makePanelItem("beta-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+		makePanelItem("bravo-model", "agents", sourceLabel),
+		makePanelItem("delta-blocked-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+		makePanelItem("alpha-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+		makePanelItem("alpha-blocked-model", "agents", sourceLabel),
+		makePanelItem("alpha-model", "agents", sourceLabel),
+		makePanelItem("charlie-blocked-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+	];
+	const blockedPaths = new Set([
+		"/skills/zeta-blocked-model/SKILL.md",
+		"/skills/delta-blocked-user/SKILL.md",
+		"/skills/alpha-blocked-model/SKILL.md",
+		"/skills/charlie-blocked-user/SKILL.md",
+	]);
+	const panel = makePanel(() => undefined, { items, blockedPaths });
+	const expected = [
+		"alpha-user",
+		"beta-user",
+		"alpha-model",
+		"bravo-model",
+		"charlie-blocked-user",
+		"delta-blocked-user",
+		"alpha-blocked-model",
+		"zeta-blocked-model",
+	];
+	const assertOrder = () => {
+		const list = wideList(panel);
+		for (let index = 1; index < expected.length; index++) {
+			assert.ok(
+				list.indexOf(expected[index - 1]) < list.indexOf(expected[index]),
+				`${expected[index - 1]} must precede ${expected[index]}`,
+			);
+		}
+	};
+
+	panel.render(120);
+	assertOrder();
+	panel.handleInput("]");
+	assert.match(terminalText(panel.render(120).join("\n")), /\[\.agents 8\]/);
+	assertOrder();
+});
+
+test("symbol ordering waits for Apply and keeps selection on the reordered Skill", () => {
+	const sourceLabel = ".agents (~/.agents/skills)";
+	const commandOnly = { modelVisible: false, commandAvailable: true };
+	const items = [
+		makePanelItem("zeta-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+		makePanelItem("alpha-model", "agents", sourceLabel),
+		makePanelItem("beta-blocked-user", "agents", sourceLabel, { nativeAvailability: commandOnly }),
+		makePanelItem("charlie-blocked-model", "agents", sourceLabel),
+	];
+	const blockedPaths = new Set([
+		"/skills/beta-blocked-user/SKILL.md",
+		"/skills/charlie-blocked-model/SKILL.md",
+	]);
+	const panel = makePanel(() => undefined, { items, blockedPaths });
+	panel.render(120);
+
+	assert.ok(wideList(panel).indexOf("zeta-user") < wideList(panel).indexOf("alpha-model"));
+	assert.match(widePreview(panel), /# zeta-user/);
+	panel.handleInput(" ");
+	assert.match(listLine(panel, "zeta-user"), /Unsaved/);
+	assert.ok(wideList(panel).indexOf("zeta-user") < wideList(panel).indexOf("alpha-model"));
+	assert.match(widePreview(panel), /# zeta-user/);
+
+	panel.handleInput("\x13");
+	const appliedList = wideList(panel);
+	assert.ok(appliedList.indexOf("alpha-model") < appliedList.indexOf("beta-blocked-user"));
+	assert.ok(appliedList.indexOf("beta-blocked-user") < appliedList.indexOf("zeta-user"));
+	assert.ok(appliedList.indexOf("zeta-user") < appliedList.indexOf("charlie-blocked-model"));
+	assert.match(listLine(panel, "zeta-user"), /⊘ ⓤ zeta-user/);
+	assert.match(widePreview(panel), /# zeta-user/);
+});
+
+test("filtering keeps fuzzy relevance ahead of normal-list symbol ordering", () => {
+	const sourceLabel = ".agents (~/.agents/skills)";
+	const panel = makePanel(() => undefined, {
+		items: [
+			makePanelItem("x-target-user", "agents", sourceLabel, {
+				nativeAvailability: { modelVisible: false, commandAvailable: true },
+			}),
+			makePanelItem("target-model", "agents", sourceLabel),
+		],
+		blockedPaths: new Set(),
+	});
+	panel.render(120);
+	panel.handleInput("/");
+	for (const character of "target") panel.handleInput(character);
+
+	const list = wideList(panel);
+	assert.ok(list.indexOf("target-model") < list.indexOf("x-target-user"));
+});
+
 test("configuration-level groups survive filtering and keep scope precedence", () => {
 	const panel = makePanel(() => undefined, {
 		items: [
-			makePanelItem("global-scope-query-result", "claude", "Claude (~/.claude/skills)"),
-			makePanelItem("project-scope-query", "claude", "Claude (project)", {
+			makePanelItem("global-scope-query-result", "claude", "Claude Code (~/.claude/skills)"),
+			makePanelItem("project-scope-query", "claude", "Claude Code (project)", {
 				configurationLevel: "project",
 			}),
 		],
@@ -471,10 +618,10 @@ test("configuration-level groups survive filtering and keep scope precedence", (
 
 test("a scrolled source keeps the current configuration-level header sticky", () => {
 	const globals = Array.from({ length: 8 }, (_, index) =>
-		makePanelItem(`global-${index}`, "claude", "Claude (~/.claude/skills)"),
+		makePanelItem(`global-${index}`, "claude", "Claude Code (~/.claude/skills)"),
 	);
 	const projects = Array.from({ length: 8 }, (_, index) =>
-		makePanelItem(`project-${index}`, "claude", "Claude (project)", {
+		makePanelItem(`project-${index}`, "claude", "Claude Code (project)", {
 			configurationLevel: "project",
 		}),
 	);
@@ -485,7 +632,7 @@ test("a scrolled source keeps the current configuration-level header sticky", ()
 	const list = wideList(panel);
 
 	assert.match(list, /Project \(8\)/);
-	assert.doesNotMatch(list, /Claude \(project\)/);
+	assert.doesNotMatch(list, /Claude Code \(project\)/);
 });
 
 test("group headers are selectable and Space or Enter toggles them", () => {
@@ -533,36 +680,56 @@ test("group headers are selectable and Space or Enter toggles them", () => {
 	assert.match(widePreview(panel), /# alpha/);
 });
 
-test("Skill rows use a uniform child indent beneath their group headings", () => {
-	const panel = makePanel(() => undefined, {
-		items: [
-			makePanelItem("alpha", "agents", ".agents (~/.agents/skills)"),
-			makePanelItem("command-only", "agents", ".agents (~/.agents/skills)", {
-				nativeAvailability: { modelVisible: false, commandAvailable: true },
-			}),
-			makePanelItem("agents-project", "agents", ".agents (~/.agents/skills)"),
-		],
-	});
-	const lines = wideList(panel).split("\n");
-	const groupLine = lines.find((line) => line.includes(".agents (~/.agents/skills)"));
-	const normalSkillLine = lines.find((line) => line.includes("alpha"));
-	const commandOnlySkillLine = lines.find((line) => line.includes("command-only"));
-	const blockedSkillLine = lines.find((line) => line.includes("agents-project"));
-	assert.ok(groupLine);
-	assert.ok(normalSkillLine);
-	assert.ok(commandOnlySkillLine);
-	assert.ok(blockedSkillLine);
-	const groupLabelColumn = groupLine.indexOf(".agents");
-	const normalSkillLabelColumn = normalSkillLine.indexOf("alpha");
-	const commandOnlySkillIconColumn = commandOnlySkillLine.indexOf(FALLBACK_USER_ICON);
-	const commandOnlySkillLabelColumn = commandOnlySkillLine.indexOf("command-only");
-	const blockedSkillIconColumn = blockedSkillLine.indexOf(BLOCKED_ICON);
-	const blockedSkillLabelColumn = blockedSkillLine.indexOf("agents-project");
-	assert.equal(normalSkillLabelColumn, groupLabelColumn + 2);
-	assert.equal(commandOnlySkillIconColumn, normalSkillLabelColumn);
-	assert.equal(commandOnlySkillLabelColumn, commandOnlySkillIconColumn + 2);
-	assert.equal(blockedSkillIconColumn, normalSkillLabelColumn);
-	assert.equal(blockedSkillLabelColumn, blockedSkillIconColumn + 2);
+test("Skill rows use a two-cell indent and reserve marker columns before aligned names at every layout", () => {
+	const visualColumn = (line, text) => {
+		const index = line.indexOf(text);
+		assert.notEqual(index, -1);
+		return visibleWidth(line.slice(0, index));
+	};
+
+	for (const userOnlyIcon of [FALLBACK_USER_ICON, FONT_AWESOME_USER_ICON]) {
+		const panel = makePanel(() => undefined, {
+			userOnlyIcon,
+			items: [
+				makePanelItem("alpha", "agents", ".agents (~/.agents/skills)"),
+				makePanelItem("command-only", "agents", ".agents (~/.agents/skills)", {
+					nativeAvailability: { modelVisible: false, commandAvailable: true },
+				}),
+				makePanelItem("agents-project", "agents", ".agents (~/.agents/skills)"),
+				makePanelItem("settings-model", "agents", ".agents (~/.agents/skills)", {
+					nativeAvailability: { modelVisible: false, commandAvailable: true },
+				}),
+			],
+		});
+
+		for (const width of [32, 48, 92, 120]) {
+			const rendered = panel.render(width).map(terminalText);
+			const lines = rendered.map((line) => line.split("│")[1] ?? line);
+			const findLine = (text) => {
+				const line = lines.find((candidate) => candidate.includes(text));
+				assert.ok(line, `${text} must render at width ${width}`);
+				return line;
+			};
+			const groupLine = findLine(".agents (~/.agents/skills)");
+			const normalSkillLine = findLine("alpha");
+			const userOnlySkillLine = findLine("command-only");
+			const blockedOnlySkillLine = findLine("agents-project");
+			const blockedUserSkillLine = findLine("settings-model");
+			const normalSkillLabelColumn = visualColumn(normalSkillLine, "alpha");
+			const expectedBlockedColumn = normalSkillLabelColumn - 4;
+			const expectedUserColumn = normalSkillLabelColumn - 2;
+
+			assert.ok(rendered.every((line) => visibleWidth(line) === width));
+			assert.equal(normalSkillLabelColumn, visualColumn(groupLine, ".agents") + 4);
+			assert.equal(visualColumn(userOnlySkillLine, "command-only"), normalSkillLabelColumn);
+			assert.equal(visualColumn(blockedOnlySkillLine, "agents-project"), normalSkillLabelColumn);
+			assert.equal(visualColumn(blockedUserSkillLine, "settings-model"), normalSkillLabelColumn);
+			assert.equal(visualColumn(userOnlySkillLine, userOnlyIcon), expectedUserColumn);
+			assert.equal(visualColumn(blockedOnlySkillLine, BLOCKED_ICON), expectedBlockedColumn);
+			assert.equal(visualColumn(blockedUserSkillLine, BLOCKED_ICON), expectedBlockedColumn);
+			assert.equal(visualColumn(blockedUserSkillLine, userOnlyIcon), expectedUserColumn);
+		}
+	}
 });
 
 test("selected background survives ANSI resets introduced by long-name truncation", () => {
@@ -625,9 +792,9 @@ test("h collapses and l expands a selected group without moving focus", () => {
 test("a specific Source folds configuration levels independently", () => {
 	const panel = makePanel(() => undefined, {
 		items: [
-			makePanelItem("global-one", "claude", "Claude (~/.claude/skills)"),
-			makePanelItem("global-two", "claude", "Claude (~/.claude/skills)"),
-			makePanelItem("project-one", "claude", "Claude (project)", {
+			makePanelItem("global-one", "claude", "Claude Code (~/.claude/skills)"),
+			makePanelItem("global-two", "claude", "Claude Code (~/.claude/skills)"),
+			makePanelItem("project-one", "claude", "Claude Code (project)", {
 				configurationLevel: "project",
 			}),
 		],
@@ -678,6 +845,7 @@ test("filtering temporarily expands matching groups and clearing restores folds"
 
 test("wide preview shows the selected path before the Skill body without redundant metadata", () => {
 	const panel = makePanel();
+	selectSkill(panel, "agents-both");
 	const preview = widePreview(panel);
 
 	assert.match(preview, /Path\s+\/skills\/agents-both\/SKILL\.md/);
@@ -760,22 +928,21 @@ test("Skill rows show only the user-only and blocked exceptions", () => {
 	assert.doesNotMatch(listLine(panel, "agents-both"), /[ⓤ⊘]|\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
 	assert.match(listLine(panel, "agents-user"), /ⓤ agents-user/);
 	assert.doesNotMatch(listLine(panel, "agents-user"), /[⊘]|\b(?:Unblocked|Blocked|Pending|Unsaved)\b/);
-	assert.match(listLine(panel, "agents-project"), /⊘ agents-project/);
-	assert.match(listLine(panel, "settings-model"), /⊘ settings-model/);
+	assert.match(listLine(panel, "agents-project"), /⊘   agents-project/);
+	assert.match(listLine(panel, "settings-model"), /⊘   settings-model/);
 	assert.doesNotMatch(listLine(panel, "agents-project"), /\bBlocked\b/);
 	assert.doesNotMatch(wideList(panel), /Override|Pending|Unsaved/);
+	selectSkill(panel, "agents-both");
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Model \+ \/skill · Unblocked/);
 
-	panel.handleInput("j");
-	panel.handleInput("j");
-	panel.handleInput("j");
+	selectSkill(panel, "agents-project");
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Blocked · Blocked by policy/);
 	panel.handleInput(" ");
 	assert.match(listLine(panel, "agents-project"), /Unsaved/);
 	assert.doesNotMatch(listLine(panel, "agents-project"), /⊘/);
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Model \+ \/skill · Pending unblock/);
 	panel.handleInput("u");
-	assert.match(listLine(panel, "agents-project"), /⊘ agents-project/);
+	assert.match(listLine(panel, "agents-project"), /⊘   agents-project/);
 	assert.match(widePreview(panel), /Native Model \+ \/skill · Effective Blocked · Blocked by policy/);
 });
 
@@ -810,6 +977,7 @@ test("wide footer follows the focused pane", () => {
 
 test("narrow layouts keep the selected path and cycle focus with h/l", () => {
 	const panel = makePanel();
+	selectSkill(panel, "agents-both");
 	let output = panel.render(48).join("\n");
 	assert.match(output, /\/skills\/agents-both\/SKILL\.md/);
 	assert.doesNotMatch(output, /Skill default|Saved setting/);
@@ -1024,7 +1192,7 @@ test("filter input takes precedence over focus and source shortcuts", () => {
 
 test("Space toggles between Unblocked and Blocked", () => {
 	const panel = makePanel();
-	panel.render(120);
+	selectSkill(panel, "agents-both");
 	panel.handleInput(" ");
 	let output = panel.render(120).join("\n");
 	assert.match(listLine(panel, "agents-both"), /Unsaved/);
@@ -1040,7 +1208,7 @@ test("Space toggles between Unblocked and Blocked", () => {
 
 test("Shift+Space also toggles while r unblocks and u undoes", () => {
 	const panel = makePanel();
-	panel.render(120);
+	selectSkill(panel, "agents-both");
 
 	panel.handleInput("\x1b[32;2u");
 	let output = panel.render(120).join("\n");
@@ -1071,8 +1239,7 @@ test("unblocking removes a saved blocked path", () => {
 			applied = value;
 		},
 	});
-	panel.render(120);
-	for (let index = 0; index < 7; index++) panel.handleInput("DOWN");
+	selectSkill(panel, "settings-model");
 	panel.handleInput(" ");
 
 	const output = panel.render(120).join("\n");
@@ -1102,6 +1269,7 @@ test("Ctrl+S applies changes without closing and establishes a new editing basel
 	assert.equal(applied.length, 0);
 	assert.match(panel.render(120).join("\n"), /No pending changes/);
 
+	selectSkill(panel, "agents-both");
 	panel.handleInput(" ");
 
 	assert.equal(closeResult, undefined);
@@ -1114,9 +1282,9 @@ test("Ctrl+S applies changes without closing and establishes a new editing basel
 	let output = panel.render(120).join("\n");
 	assert.doesNotMatch(output, /Pending 1/);
 	assert.match(output, /Applied 1 Skill change/);
-	assert.match(listLine(panel, "agents-both"), /⊘ agents-both/);
+	assert.match(listLine(panel, "agents-both"), /⊘   agents-both/);
 
-	panel.handleInput("j");
+	selectSkill(panel, "agents-user");
 	panel.handleInput(" ");
 	output = panel.render(120).join("\n");
 	assert.match(output, /Pending 1/);
@@ -1125,7 +1293,7 @@ test("Ctrl+S applies changes without closing and establishes a new editing basel
 	assert.equal(applied.length, 2);
 	assert.equal(applied[1].has("/skills/agents-user/SKILL.md"), true);
 	assert.doesNotMatch(panel.render(120).join("\n"), /Pending 1/);
-	assert.match(listLine(panel, "agents-user"), /ⓤ ⊘ agents-user/);
+	assert.match(listLine(panel, "agents-user"), /⊘ ⓤ agents-user/);
 
 	panel.handleInput("ESC");
 	assert.deepEqual(closeResult, { action: "close" });
@@ -1142,7 +1310,7 @@ test("Ctrl+S keeps pending changes when applying fails", () => {
 			throw new Error("Could not write Skill control configuration");
 		},
 	});
-	panel.render(120);
+	selectSkill(panel, "agents-both");
 	panel.handleInput(" ");
 	panel.handleInput("\x13");
 
