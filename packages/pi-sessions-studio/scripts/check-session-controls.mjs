@@ -62,6 +62,10 @@ try {
   const turnCount = await directory.locator('.session-directory-turn').count();
   if (!turnCount) throw new Error('会话目录没有生成用户轮次');
 
+  if (await directory.locator('.session-directory-steps').count()) {
+    throw new Error('会话目录应默认收起所有轮次步骤');
+  }
+
   const overflowY = await directory.locator('.session-directory-scroll').evaluate(
     (node) => getComputedStyle(node).overflowY
   );
@@ -109,10 +113,11 @@ try {
     .locator('.session-directory-turn[data-tool-count]:not([data-tool-count="0"])')
     .first();
   if (!await toolTurn.count()) throw new Error('找不到包含工具调用的用户轮次');
-  await toolTurn.locator(':scope > .session-directory-turn-row').click();
+  await toolTurn.locator(':scope .session-directory-turn-row').click();
   await page.waitForFunction(
     () => document.querySelector('.session-directory-turn.is-current')?.dataset.toolCount !== '0'
   );
+  await toolTurn.locator(':scope .session-directory-toggle').click();
 
   const stepWithDetails = toolTurn
     .locator('[data-directory-step-id]:not([data-detail-count="0"])')

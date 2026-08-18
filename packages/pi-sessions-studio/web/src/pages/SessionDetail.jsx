@@ -26,8 +26,57 @@ function scrollAnchor(anchorId, block = 'center') {
   container.scrollTo({ top: Math.max(0, top), behavior: reduceMotion ? 'auto' : 'smooth' });
 }
 
-function scrollEntry(entryId, block = 'center') {
-  scrollAnchor(`entry-${entryId}`, block);
+// 目标可能尚未渲染（无限滚动按需加载），先轮询等元素出现；
+// 滚动后页面高度仍会随动态内容（图表/高亮块等）增长，目标位置会被顶走，
+// 因此在滚动结束后反复校正，直到目标稳定在预期位置。
+function scrollAnchorWhenReady(anchorId, block, hooks = {}, attempts = 30) {
+  const target = document.getElementById(anchorId);
+  if (!target) {
+    if (attempts > 0) {
+      window.setTimeout(() => scrollAnchorWhenReady(anchorId, block, hooks, attempts - 1), 100);
+    } else {
+      hooks.afterSettled?.();
+    }
+    return;
+  }
+  hooks.beforeScroll?.();
+  const box0 = document.querySelector('.content');
+  let lastTop = box0 ? box0.scrollTop : -1;
+  scrollAnchor(anchorId, block);
+
+  // json-inspector / tool-card 等内容在挂载后还会继续长高，把已滚到的目标顶走；
+  // 等滚动停稳后反复校正，连续 3 次采样稳定才算就位（上限约 10 秒）。
+  let stableCount = 0;
+  let iterations = 0;
+  const correct = () => {
+    if (hooks.aborted?.()) return;
+    const el = document.getElementById(anchorId);
+    const box = document.querySelector('.content');
+    if (!el || !box) { hooks.afterSettled?.(); return; }
+    iterations += 1;
+    const boxRect = box.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    let desired = box.scrollTop + elRect.top - boxRect.top;
+    if (block === 'center') desired -= Math.max(0, (box.clientHeight - elRect.height) / 2);
+    desired = Math.max(0, desired);
+
+    const top = box.scrollTop;
+    const moving = lastTop >= 0 && top !== lastTop;
+    if (Math.abs(top - desired) > 4) {
+      if (!moving) box.scrollTo({ top: desired, behavior: 'auto' });
+      stableCount = 0;
+    } else if (!moving) {
+      stableCount += 1;
+    } else {
+      stableCount = 0;
+    }
+    lastTop = top;
+
+    const settled = stableCount >= 3;
+    if (settled || iterations >= 60) hooks.afterSettled?.();
+    else window.setTimeout(correct, 160);
+  };
+  window.setTimeout(correct, 300);
 }
 
 export default function SessionDetail() {
@@ -41,6 +90,23 @@ export default function SessionDetail() {
   const [activeDirectoryEntryId, setActiveDirectoryEntryId] = useState(null);
   const sentinelRef = useRef(null);
   const didScrollRef = useRef(false);
+  const directorySpyGuardRef = useRef(false);
+  const directorySpyTimerRef = useRef(0);
+  const directoryNavSeqRef = useRef(0);
+
+  // 程序化导航滚动期间挂起目录 scroll-spy，避免途经条目反复改写当前定位、面板跟着抖动
+  const armDirectorySpyGuard = () => {
+    directorySpyGuardRef.current = true;
+    window.clearTimeout(directorySpyTimerRef.current);
+  };
+  const disarmDirectorySpyGuard = () => {
+    window.clearTimeout(directorySpyTimerRef.current);
+    directorySpyTimerRef.current = window.setTimeout(() => {
+      directorySpyGuardRef.current = false;
+    }, 200);
+  };
+
+  useEffect(() => () => window.clearTimeout(directorySpyTimerRef.current), []);
 
   useEffect(() => {
     setData(null);
@@ -198,7 +264,13 @@ export default function SessionDetail() {
     didScrollRef.current = true;
     requestAnimationFrame(() => {
       setTimeout(() => {
-        scrollEntry(targetId);
+        scrollAnchorWhenReady(`entry-${targetId}`, 'center', {
+          beforeScroll: () => {
+            armDirectorySpyGuard();
+            setActiveDirectoryEntryId(targetId);
+          },
+          afterSettled: disarmDirectorySpyGuard,
+        });
         setFlashId(targetId);
       }, 100);
     });
@@ -225,7 +297,9 @@ export default function SessionDetail() {
           else break;
         }
 
-        setActiveDirectoryEntryId((current) => (current === nextId ? current : nextId));
+        if (!directorySpyGuardRef.current) {
+          setActiveDirectoryEntryId((current) => (current === nextId ? current : nextId));
+        }
       });
     };
 
@@ -242,11 +316,17 @@ export default function SessionDetail() {
   const navigateFromDirectory = (entryId, anchorId) => {
     const index = renderablePathEntries.findIndex((entry) => entry.id === entryId);
     if (index >= 0) setShownCount((current) => Math.max(current, index + 20));
+    const navSeq = ++directoryNavSeqRef.current;
+    armDirectorySpyGuard();
     setActiveDirectoryEntryId(entryId);
 
     window.requestAnimationFrame(() => {
       window.setTimeout(() => {
-        scrollAnchor(anchorId, 'start');
+        scrollAnchorWhenReady(anchorId, 'start', {
+          beforeScroll: armDirectorySpyGuard,
+          afterSettled: disarmDirectorySpyGuard,
+          aborted: () => directoryNavSeqRef.current !== navSeq,
+        });
         setFlashId(entryId);
       }, 80);
     });
@@ -368,7 +448,12 @@ export default function SessionDetail() {
                     const idx = renderablePathEntries.findIndex((e) => e.id === o.id);
                     if (idx >= shownCount) setShownCount(idx + 20);
                     setTimeout(() => {
-                      scrollEntry(o.id, 'start');
+                      const navSeq = ++directoryNavSeqRef.current;
+                      scrollAnchorWhenReady(`entry-${o.id}`, 'start', {
+                        beforeScroll: armDirectorySpyGuard,
+                        afterSettled: disarmDirectorySpyGuard,
+                        aborted: () => directoryNavSeqRef.current !== navSeq,
+                      });
                       setFlashId(o.id);
                       setActiveDirectoryEntryId(o.id);
                     }, 80);

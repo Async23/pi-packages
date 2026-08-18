@@ -670,14 +670,48 @@ option { background: var(--panel-solid); }
   background: var(--surface-hover);
   color: var(--text);
 }
+.session-directory-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
 .session-directory-turn-row {
   position: relative;
+  flex: 1 1 auto;
+  width: auto;
   min-height: 31px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   padding: 5px 6px 5px 24px;
+}
+.session-directory-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--dim2);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+.session-directory-toggle:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.session-directory-toggle .session-directory-chevron {
+  display: inline-block;
+  transition: transform 120ms ease;
+}
+.session-directory-toggle[aria-expanded="true"] .session-directory-chevron {
+  transform: rotate(90deg);
 }
 .session-directory-node {
   position: absolute;
@@ -691,7 +725,7 @@ option { background: var(--panel-solid); }
   background: var(--panel-solid);
   transform: translateY(-50%);
 }
-.session-directory-turn.is-current > .session-directory-turn-row .session-directory-node {
+.session-directory-turn.is-current .session-directory-turn-row .session-directory-node {
   background: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 13%, transparent);
 }
