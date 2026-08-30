@@ -19,16 +19,36 @@ process.env.TMUX_PANE = "%931";
 const extension = await import("../extensions/index.ts");
 
 const {
+  NOTIFICATION_SOUNDS,
   buildFocusCommand,
   cleanPaneTitle,
   default: registerPiNotify,
   extractMessageText,
   notificationSubtitle,
+  notificationSound,
   notificationSummary,
   parseTmuxTarget,
   shellQuote,
   shortDisplayText,
 } = extension;
+
+test("selects a completion sound from the shared pool unless overridden", () => {
+  const previous = process.env.PI_NOTIFY_SOUND;
+  const previousRandom = Math.random;
+  try {
+    delete process.env.PI_NOTIFY_SOUND;
+    Math.random = () => 0;
+    assert.equal(notificationSound(), "Glass");
+    Math.random = () => 0.999999;
+    assert.equal(notificationSound(), "Tink");
+    process.env.PI_NOTIFY_SOUND = "Ping";
+    assert.equal(notificationSound(), "Ping");
+  } finally {
+    Math.random = previousRandom;
+    if (previous === undefined) delete process.env.PI_NOTIFY_SOUND;
+    else process.env.PI_NOTIFY_SOUND = previous;
+  }
+});
 
 test("formats prompt subtitles for macOS notifications", () => {
   assert.equal(
@@ -172,6 +192,9 @@ test("registers lifecycle handlers and sends after agent_settled", async () => {
     "-message",
     "已经实现并通过测试。",
   ]);
+  const soundIndex = call.args.indexOf("-sound");
+  assert.ok(soundIndex >= 0);
+  assert.ok(NOTIFICATION_SOUNDS.includes(call.args[soundIndex + 1]));
   assert.ok(call.args.includes("-execute"));
 });
 

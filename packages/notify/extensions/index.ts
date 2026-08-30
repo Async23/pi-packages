@@ -39,6 +39,14 @@ const NOTIFIER_TIMEOUT_MS = 5_000;
 const SUBTITLE_MAX_WIDTH = 48;
 const THREAD_TITLE_MAX_WIDTH = 48;
 const BODY_MAX_LENGTH = 140;
+export const NOTIFICATION_SOUNDS = [
+  "Glass",
+  "Ping",
+  "Pop",
+  "Purr",
+  "Submarine",
+  "Tink",
+] as const;
 const IMAGE_MARKER_RE = /\[\s*Image\s+#\d+\s*\]/giu;
 const CYBER_POLICY_ERROR_RE =
   /\bcyber(?:_|-)?policy\b|flagged for possible cybersecurity risk|trusted access for cyber/iu;
@@ -59,6 +67,7 @@ interface NotificationContent {
   subtitle: string;
   body: string;
   group: string;
+  sound: string;
 }
 
 interface NotificationResult extends NotificationContent {
@@ -76,6 +85,14 @@ export function firstNonEmptyLine(value: unknown): string {
     if (text) return text;
   }
   return "";
+}
+
+export function notificationSound(): string {
+  const override = (process.env.PI_NOTIFY_SOUND || "").trim();
+  return (
+    override ||
+    NOTIFICATION_SOUNDS[Math.floor(Math.random() * NOTIFICATION_SOUNDS.length)]!
+  );
 }
 
 function isZeroWidth(char: string): boolean {
@@ -251,7 +268,7 @@ export function buildNotifierArgs(
     "-message",
     content.body,
     "-sound",
-    process.env.PI_NOTIFY_SOUND || "Glass",
+    content.sound,
     "-group",
     content.group,
   ];
@@ -338,6 +355,7 @@ async function runAppleScript(
   title: string,
   subtitle: string,
   body: string,
+  sound: string,
   targetGhostty: boolean,
 ): Promise<boolean> {
   const tellStart = targetGhostty ? `tell application id "${GHOSTTY_BUNDLE_ID}"\n` : "";
@@ -346,12 +364,13 @@ async function runAppleScript(
 set notificationBody to item 1 of argv
 set notificationTitle to item 2 of argv
 set notificationSubtitle to item 3 of argv
-${tellStart}display notification notificationBody with title notificationTitle subtitle notificationSubtitle${tellEnd}
+set notificationSound to item 4 of argv
+${tellStart}display notification notificationBody with title notificationTitle subtitle notificationSubtitle sound name notificationSound${tellEnd}
 end run`;
   try {
     const result = await pi.exec(
       "/usr/bin/osascript",
-      ["-e", script, body, title, subtitle],
+      ["-e", script, body, title, subtitle, sound],
       { timeout: NOTIFIER_TIMEOUT_MS },
     );
     return result.code === 0;
@@ -381,7 +400,8 @@ async function deliverNotification(
   const body = notificationSummary(answer);
   const sessionId = ctx.sessionManager.getSessionId();
   const group = `pi-agent-turn-complete-${safeId(sessionId || target?.paneId || project)}`;
-  const content: NotificationContent = { title, subtitle, body, group };
+  const sound = notificationSound();
+  const content: NotificationContent = { title, subtitle, body, group, sound };
   const focusCommand = buildFocusCommand(target);
   const iconPath = (await isFile(APP_ICON))
     ? APP_ICON
@@ -412,11 +432,11 @@ async function deliverNotification(
     }
   }
 
-  if (!success && (await runAppleScript(pi, title, subtitle, body, true))) {
+  if (!success && (await runAppleScript(pi, title, subtitle, body, sound, true))) {
     success = true;
     via = "ghostty-osascript";
   }
-  if (!success && (await runAppleScript(pi, title, subtitle, body, false))) {
+  if (!success && (await runAppleScript(pi, title, subtitle, body, sound, false))) {
     success = true;
     via = "osascript";
   }
@@ -428,6 +448,7 @@ async function deliverNotification(
     sessionId,
     tmuxPane: target?.paneId || "",
     coordinate: target?.coordinate || "",
+    sound,
   });
   return { ...content, success, via };
 }

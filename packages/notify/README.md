@@ -8,7 +8,7 @@ Native macOS completion notifications for the Pi coding agent, with Ghostty/tmux
 - Shows the tmux coordinates and Pi session or project name.
 - Uses the latest user prompt as the subtitle and the final outcome as the body.
 - Reports terminal provider errors and cancelled tasks explicitly, including `cyber_policy`, instead of treating them as successful completion.
-- Plays the macOS `Glass` sound by default.
+- Randomly selects `Glass`, `Ping`, `Pop`, `Purr`, `Submarine`, or `Tink` for each completion.
 - Clicking the notification activates Ghostty and selects the original tmux pane.
 - Keeps one notification per Pi session instead of collapsing concurrent sessions together.
 - Logs delivery metadata only, not prompt or answer contents.
@@ -76,23 +76,23 @@ Long text and image markers are cleaned before display.
 
 ## Commands
 
-| Command | Description |
-| --- | --- |
-| `/pi-notify-setup` | Install or refresh the dedicated macOS notifier app |
-| `/pi-notify-test` | Send a test notification and test tmux click-to-focus |
+| No. | Command | Description |
+| ---: | --- | --- |
+| 1 | `/pi-notify-setup` | Install or refresh the dedicated macOS notifier app |
+| 2 | `/pi-notify-test` | Send a test notification and test tmux click-to-focus |
 
 ## Configuration
 
 Optional environment variables:
 
-| Variable | Purpose |
-| --- | --- |
-| `PI_NOTIFY_DISABLED=1` | Disable notifications |
-| `PI_NOTIFY_SOUND=name` | Change the macOS sound; defaults to `Glass` |
-| `PI_NOTIFY_APP=/path/app` | Override the notifier app path |
-| `PI_NOTIFY_FOCUS_SCRIPT=/path/script` | Override the tmux focus script |
-| `PI_NOTIFY_LOG_PATH=/path/log` | Override the metadata log path |
-| `PI_NOTIFY_DISABLE_LOG=1` | Disable metadata logging |
+| No. | Variable | Purpose |
+| ---: | --- | --- |
+| 1 | `PI_NOTIFY_DISABLED=1` | Disable notifications |
+| 2 | `PI_NOTIFY_SOUND=name` | Pin one macOS sound instead of using the random pool |
+| 3 | `PI_NOTIFY_APP=/path/app` | Override the notifier app path |
+| 4 | `PI_NOTIFY_FOCUS_SCRIPT=/path/script` | Override the tmux focus script |
+| 5 | `PI_NOTIFY_LOG_PATH=/path/log` | Override the metadata log path |
+| 6 | `PI_NOTIFY_DISABLE_LOG=1` | Disable metadata logging |
 
 The default log is:
 
@@ -100,7 +100,7 @@ The default log is:
 ~/.pi/agent/logs/pi-notify.log
 ```
 
-It records timestamps, delivery method, session ID, and tmux coordinates only.
+It records timestamps, delivery method, session ID, tmux coordinates, and the selected sound only.
 
 ## Fallback order
 
