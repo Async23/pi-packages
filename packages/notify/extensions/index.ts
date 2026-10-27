@@ -472,7 +472,7 @@ export default function piNotifyExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("before_agent_start", (event) => {
-    latestPrompt = pendingRawPrompt ?? event.prompt;
+    latestPrompt = event.messageType === "user" ? pendingRawPrompt ?? event.prompt : "";
     pendingRawPrompt = undefined;
     latestAssistant = "";
     latestError = undefined;

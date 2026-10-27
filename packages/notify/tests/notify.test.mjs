@@ -172,7 +172,7 @@ test("registers lifecycle handlers and sends after agent_settled", async () => {
   assert.ok(commands.has("pi-notify-test"));
 
   handlers.get("input")({ text: "帮我实现通知", source: "interactive" });
-  handlers.get("before_agent_start")({ prompt: "expanded prompt" });
+  handlers.get("before_agent_start")({ messageType: "user", prompt: "expanded prompt" });
   handlers.get("message_end")({
     message: {
       role: "assistant",
@@ -198,10 +198,40 @@ test("registers lifecycle handlers and sends after agent_settled", async () => {
   assert.ok(call.args.includes("-execute"));
 });
 
+test("custom-triggered runs fall back to the branch prompt", async () => {
+  const { calls, ctx, handlers } = createLifecycleHarness();
+  ctx.sessionManager.getBranch = () => [
+    {
+      type: "message",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "分支里的用户消息" }],
+      },
+    },
+  ];
+
+  handlers.get("before_agent_start")({
+    messageType: "custom",
+    message: { customType: "test", content: "扩展触发" },
+  });
+  handlers.get("message_end")({
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "扩展任务完成。" }],
+    },
+  });
+
+  await handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
+
+  const call = notifierCall(calls);
+  assert.ok(call, "custom Pi notifier should be selected");
+  assert.deepEqual(call.args.slice(2, 4), ["-subtitle", "分支里的用户消息"]);
+});
+
 test("reports terminal cyber_policy errors instead of completion", async () => {
   const { calls, ctx, handlers } = createLifecycleHarness();
   handlers.get("input")({ text: "继续当前任务", source: "interactive" });
-  handlers.get("before_agent_start")({ prompt: "继续当前任务" });
+  handlers.get("before_agent_start")({ messageType: "user", prompt: "继续当前任务" });
   handlers.get("message_end")({
     message: {
       role: "assistant",
@@ -227,7 +257,7 @@ test("reports terminal cyber_policy errors instead of completion", async () => {
 test("reports an aborted task instead of completion", async () => {
   const { calls, ctx, handlers } = createLifecycleHarness();
   handlers.get("input")({ text: "停止当前任务", source: "interactive" });
-  handlers.get("before_agent_start")({ prompt: "停止当前任务" });
+  handlers.get("before_agent_start")({ messageType: "user", prompt: "停止当前任务" });
   handlers.get("message_end")({
     message: {
       role: "assistant",
@@ -252,7 +282,7 @@ test("reports an aborted task instead of completion", async () => {
 test("clears a transient error when an automatic retry succeeds", async () => {
   const { calls, ctx, handlers } = createLifecycleHarness();
   handlers.get("input")({ text: "继续当前任务", source: "interactive" });
-  handlers.get("before_agent_start")({ prompt: "继续当前任务" });
+  handlers.get("before_agent_start")({ messageType: "user", prompt: "继续当前任务" });
   handlers.get("message_end")({
     message: {
       role: "assistant",
