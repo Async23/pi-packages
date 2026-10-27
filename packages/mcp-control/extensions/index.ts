@@ -367,8 +367,10 @@ async function invokePrompt(
 	}
 	const result = await runtime.getPrompt(entry.runtimeInstanceId, prompt.name, args);
 	const text = formatPromptResult(result);
+	// Queue when Pi is streaming instead of failing with "Agent is already processing".
 	pi.sendUserMessage(
 		`<mcp_prompt source_agent="${escapeXmlAttribute(entry.agentLabel)}" source_server="${escapeXmlAttribute(entry.serverName)}" prompt="${escapeXmlAttribute(prompt.name)}">\n${text}\n</mcp_prompt>`,
+		{ deliverAs: "followUp" },
 	);
 	return true;
 }
